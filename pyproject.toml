@@ -1,0 +1,125 @@
+[project]
+name = "pqcow"
+version = "0.0.1"
+requires-python = "==3.12.7"
+dependencies = [
+    "pqcow-client",
+    "pqcow-func",
+    "pqcow-server",
+    "pqcow-types",
+]
+
+[tool.uv]
+package = false
+
+[tool.uv.sources]
+liboqs-python = { git = "https://github.com/open-quantum-safe/liboqs-python.git", rev = "02198f9c3366cfafdea38a7830b82b9bd78bcb32" }
+pqcow-client = { workspace = true }
+pqcow-func = { workspace = true }
+pqcow-server = { workspace = true }
+pqcow-types = { workspace = true }
+
+[tool.uv.workspace]
+members = ["packages/*"]
+exclude = ["packages/__pycache__"]
+
+[project.optional-dependencies]
+dev = [
+    "isort==5.13.2",
+    "pre-commit==4.0.1",
+    "ruff==0.7.3",
+    "bandit>=1.7.10",
+]
+lint = [
+    "mypy==1.13.0",
+    "types-pytz==2024.2.0.20241003",
+]
+uvloop = [
+    "uvloop==0.21.0; sys_platform == 'linux' or sys_platform == 'darwin'",
+]
+
+[tool.isort]
+py_version = 312
+src_paths = ["packages"]
+line_length = 120
+multi_line_output = 3
+force_grid_wrap = 0
+include_trailing_comma = true
+split_on_trailing_comma = false
+single_line_exclusions = ["."]
+sections = ["FUTURE", "STDLIB", "THIRDPARTY", "FIRSTPARTY", "LOCALFOLDER"]
+skip_gitignore = true
+extend_skip = ["__pycache__"]
+extend_skip_glob = []
+
+[tool.ruff]
+src = ["packages"]
+line-length = 120
+exclude = [
+    ".git",
+    ".mypy_cache",
+    ".ruff_cache",
+    "__pypackages__",
+    "__pycache__",
+    "*.pyi",
+    "venv",
+    ".venv",
+]
+
+[tool.ruff.lint]
+select = ["ALL"]
+ignore = [
+    "A003",
+    "ANN002", "ANN003", "ANN101", "ANN102", "ANN401",
+    "C901",
+    "D100", "D101", "D102", "D103", "D104", "D105", "D106", "D107", "D203", "D205", "D212",
+    "ERA001",
+    "FA100", "FA102",
+    "FBT001", "FBT002",
+    "FIX002",
+    "I001",
+    "PLR0911", "PLR0912", "PLR0913", "PLR0915", "PLR5501",
+    "PLW0120",
+    "RUF001",
+    "TD002", "TD003"
+]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
+
+[tool.mypy]
+python_version = "3.12"
+plugins = []
+allow_redefinition = true
+check_untyped_defs = true
+disallow_any_generics = true
+disallow_incomplete_defs = true
+disallow_untyped_calls = true
+disallow_untyped_defs = true
+extra_checks = true
+follow_imports = "skip"
+follow_imports_for_stubs = false
+ignore_missing_imports = false
+namespace_packages = true
+no_implicit_optional = true
+no_implicit_reexport = true
+pretty = true
+show_absolute_path = true
+show_error_codes = true
+show_error_context = true
+warn_redundant_casts = true
+warn_unused_configs = true
+warn_unused_ignores = true
+
+disable_error_code = [
+    "no-redef",
+]
+
+exclude = [
+    "\\.?venv",
+    "\\.idea",
+    "\\.tests?",
+]
