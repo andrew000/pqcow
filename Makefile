@@ -39,16 +39,16 @@ format:
 .PHONE mypy:
 mypy:
 	echo "Running MyPy..."
-	uv run mypy --config-file pyproject.toml --package $(src-dir)
+	uv run mypy --config-file pyproject.toml
 
-.PHONY show-outdated:
-show-outdated:
+.PHONY outdated:
+outdated:
 	uv tree --outdated --universal
 
-.PHONY uv-sync:
-uv-sync:
+.PHONY sync:
+sync:
 	uv sync --extra dev --extra lint --extra uvloop --link-mode=copy
 
-.PHONY uv-export: uv-sync
-uv-export:
-	uv export --quiet --format requirements-txt --no-dev --extra uvloop --output-file $(src-dir)\requirements.txt
+.PHONY freeze: sync
+freeze:
+	uv export --quiet --format requirements-txt --no-dev --extra uvloop --output-file requirements.txt

@@ -1,38 +1,28 @@
 import asyncio
 
-from pqcow_client.src.__main__ import start_client
+from pqcow_client.src.client import Client
 
 
-async def create_connection(host: str, port: int) -> None:
-    return await start_client(host, port)
+async def create_client(host: str, port: int) -> Client:
+    client = Client(host, port, None)
+    await client.connect()
+    return client
 
 
-async def send_message(writer: asyncio.StreamWriter, message: str) -> None:
-    writer.write(message.encode())
-    await writer.drain()
+async def send_message(client: Client, message: str) -> None:
+    for i in range(1_000):
+        await client.send_message(chat_id=1, text=f"[{i}] {message}")
 
 
-async def close_connection(writer: asyncio.StreamWriter) -> None:
-    writer.close()
-    await writer.wait_closed()
-
-
-async def test() -> None:
-    connections_count = 10000
+async def bench() -> None:
+    connections_count = 100
     host = "127.0.0.1"
     port = 8080
 
-    connections = [create_connection(host, port) for _ in range(connections_count)]
-    connections = await asyncio.gather(*connections)
+    connections = await asyncio.gather(*[create_client(host, port) for _ in range(connections_count)])
 
-    await asyncio.sleep(100)
-
-    # await asyncio.gather(*[send_message(writer, "Hello, world!") for _, writer in connections])
-    #
-    # await asyncio.sleep(1)
-    #
-    # await asyncio.gather(*[close_connection(writer) for _, writer in connections])
+    await asyncio.gather(*[send_message(client, "Hello, world!") for client in connections])
 
 
 if __name__ == "__main__":
-    asyncio.run(test())
+    asyncio.run(bench())

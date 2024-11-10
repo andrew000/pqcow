@@ -4,51 +4,41 @@ import secrets
 import struct
 from typing import TYPE_CHECKING
 
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.padding import PKCS7
 
 if TYPE_CHECKING:
-    from asyncio import StreamReader, StreamWriter
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    from websockets.asyncio.client import ClientConnection
+    from websockets.asyncio.server import ServerConnection
 
 
-def encrypt_data(key: bytes, plaintext: bytes) -> tuple[bytes, bytes]:
+def encrypt_data(key: AESGCM, plaintext: bytes) -> tuple[bytes, bytes]:
     nonce = secrets.token_bytes(12)
-    aesgcm = AESGCM(key)
 
     padder = PKCS7(128).padder()
     padded_data = padder.update(plaintext) + padder.finalize()
 
-    ciphertext = aesgcm.encrypt(nonce, padded_data, None)
+    ciphertext = key.encrypt(nonce, padded_data, None)
 
     return nonce, ciphertext
 
 
-def decrypt_data(key: bytes, nonce: bytes, ciphertext: bytes) -> bytes:
-    aesgcm = AESGCM(key)
-    padded_data = aesgcm.decrypt(nonce, ciphertext, None)
+def decrypt_data(key: AESGCM, nonce: bytes, ciphertext: bytes) -> bytes:
+    padded_data = key.decrypt(nonce, ciphertext, None)
 
     unpadder = PKCS7(128).unpadder()
     return unpadder.update(padded_data) + unpadder.finalize()
 
 
-async def send_data(writer: StreamWriter, ciphertext: bytes, nonce: bytes) -> None:
-    # Send length of data
-    writer.write(struct.pack("!I", len(nonce)))
-    writer.write(struct.pack("!I", len(ciphertext)))
+async def send_data(connection: ClientConnection | ServerConnection, key: AESGCM, data: bytes) -> None:
+    nonce, ciphertext = encrypt_data(key, data)
+    packed_data = struct.pack("!I", len(nonce)) + nonce + ciphertext
 
-    writer.write(nonce + ciphertext)
-
-    await writer.drain()
+    await connection.send(packed_data)
 
 
-async def receive_data(reader: StreamReader) -> tuple[bytes, bytes]:
-    # Read length of data
-    nonce = struct.unpack("!I", await reader.readexactly(4))[0]
-    ciphertext_len = struct.unpack("!I", await reader.readexactly(4))[0]
-    # tag_len = struct.unpack("!I", await reader.readexactly(4))[0]
+async def receive_data(key: AESGCM, data: bytes) -> bytes:
+    nonce_len, encrypted_data = struct.unpack("!I", data[:4])[0], data[4:]
+    nonce, ciphertext = encrypted_data[:nonce_len], encrypted_data[nonce_len:]
 
-    nonce = await reader.readexactly(nonce)
-    ciphertext = await reader.readexactly(ciphertext_len)
-    # tag = await reader.readexactly(tag_len)
-
-    return nonce, ciphertext
+    return decrypt_data(key, nonce, ciphertext)

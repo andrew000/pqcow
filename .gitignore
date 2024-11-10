@@ -1,7 +1,3 @@
 /.env
-/packages/pqcow.egg-info/
-/packages/pqcow_types/src/pqcow_types.egg-info/
-/packages/pqcow_server/src/pqcow_server.egg-info/
-/packages/pqcow_func/src/pqcow_func.egg-info/
-/packages/pqcow_client/src/pqcow_client.egg-info/
+pqcow.egg-info
 dilithium.key
