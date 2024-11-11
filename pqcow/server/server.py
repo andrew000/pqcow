@@ -3,7 +3,6 @@ from __future__ import annotations
 import contextlib
 import logging
 import secrets
-import signal
 from asyncio import CancelledError
 from typing import TYPE_CHECKING, cast
 
@@ -12,13 +11,13 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.hashes import SHA3_512
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from oqs import KeyEncapsulation, Signature  # type: ignore[import-untyped]
-from websockets import ConnectionClosedError, serve
+from websockets import ConnectionClosed, serve
 from websockets.asyncio.server import Server as WS_Server
 from websockets.asyncio.server import ServerConnection
 
-from pqcow_func import receive_data, send_data
-from pqcow_types.answer_types import OK, Answer, Handshake
-from pqcow_types.request_types import SendHandshake, SendMessage, SendRequest
+from pqcow.func import receive_data, send_data
+from pqcow.pq_types.answer_types import OK, Answer, Handshake
+from pqcow.pq_types.request_types import SendHandshake, SendMessage, SendRequest
 
 if TYPE_CHECKING:
     from types import FrameType
@@ -70,11 +69,12 @@ class Server:
 
     def _signal_handler(self, signal_number: int, frame_type: FrameType | None) -> None:
         logger.info("Received signal %s, frame %s", signal_number, frame_type)
-        cast(WS_Server, self.server).close(close_connections=True)
+        cast(WS_Server, self.server).close(close_connections=False)
 
     async def start(self) -> None:
         self.server = await serve(handler=self.handler, host=self.host, port=self.port)
-        signal.signal(signal.SIGINT, self._signal_handler)
+        # signal.signal(signal.SIGINT, self._signal_handler)
+        # signal.signal(signal.SIGTERM, self._signal_handler)
 
         with contextlib.suppress(CancelledError):
             await self.server.serve_forever()
@@ -92,9 +92,13 @@ class Server:
                 match send_request.request:
                     case SendMessage(text=text):
                         logger.info("%s Received message: %s", connection.remote_address, text)
-                        await send_data(connection, shared_secret, msgspec.msgpack.encode(Answer(answer=OK())))
+                        await send_data(
+                            connection=connection,
+                            shared_secret=shared_secret,
+                            data=msgspec.msgpack.encode(Answer(event_id=send_request.event_id, answer=OK())),
+                        )
 
-        except ConnectionClosedError:
+        except ConnectionClosed:
             logger.info("%s Connection closed by the client", connection.remote_address)
 
         except Exception as e:

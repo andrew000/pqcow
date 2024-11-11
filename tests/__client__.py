@@ -8,7 +8,7 @@ from pathlib import Path
 import oqs  # type: ignore[import-untyped]
 from websockets import ConnectionClosed, ConnectionClosedError
 
-from pqcow_client import Client
+from pqcow.client import Client
 
 logging.basicConfig(format="%(asctime)s %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -36,12 +36,15 @@ async def sender(client: Client) -> CloseReason:
 
             try:
                 await client.send_message(1, message)
+                # await asyncio.gather(
+                #     *[client.send_message(1, f"Message {i}") for i in range(10_000)]
+                # )
 
             except ConnectionClosed:
                 logger.info("Connection closed by the server")
                 return CloseReason.SERVER_CLOSED
 
-            await asyncio.sleep(0.1)
+            # await asyncio.sleep(0.1)
 
     except asyncio.CancelledError:
         logger.info("Sender task was cancelled")
@@ -63,46 +66,6 @@ async def start_client(host: str, port: int) -> CloseReason:
         dilithium_path.write_bytes(private_key)
 
     dilithium = oqs.Signature("Dilithium3", secret_key=dilithium_path.read_bytes())
-
-    # try:
-    #     reader, writer = await asyncio.open_connection(host, port)
-    # except ConnectionRefusedError:
-    #     logger.info("Could not connect to server at %s:%s", host, port)
-    #     return
-    # except Exception as e:
-    #     logger.exception("An error occurred while connecting to server: %s", type(e).mro())
-    #     return
-    #
-    # logger.info("Connected to server at %s:%s", host, port)
-    #
-    # shared_secret = await key_exchange(reader, writer)
-    # salt = await reader.read(16)
-    # hkdf = create_hkdf(salt)
-    # key = hkdf.derive(shared_secret)
-    #
-    # while True:
-    #     # await asyncio.sleep(0.1)
-    #     # message = input("Enter message to send: ")
-    #     message = "Hello from client"
-    #
-    #     if message == "/exit":
-    #         break
-    #
-    #     try:
-    #         request = Request(request=Message(text=message))
-    #         await send_request(writer, key, request)
-    #
-    #         answer = await receive_answer(reader, key)
-    #
-    #     except struct.error:
-    #         logger.info("Error receiving answer")
-    #         return
-    #
-    #     except (ConnectionResetError, ConnectionAbortedError):
-    #         logger.info("Server closed connection")
-    #         return
-    #
-    #     logger.info("Received answer: %s", answer)
 
     client = Client(host, port, dilithium)
 
@@ -127,7 +90,7 @@ async def start_client(host: str, port: int) -> CloseReason:
 
 if __name__ == "__main__":
     while True:
-        close_reason = asyncio.run(start_client("127.0.0.1", 8080))
+        close_reason = asyncio.run(start_client("192.168.0.111", 8080))
 
         match close_reason:
             case CloseReason.CLIENT_CLOSED | CloseReason.TASK_CANCELLED:

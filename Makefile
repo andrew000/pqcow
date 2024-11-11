@@ -1,11 +1,11 @@
 include .env
 export
 
-src-dir = packages
-client-dir = $(src-dir)/pqcow_client
-server-dir = $(src-dir)/pqcow_server
-func-dir = $(src-dir)/pqcow_func
-types-dir = $(src-dir)/pqcow_types
+src-dir = pqcow
+client-dir = $(src-dir)/client
+server-dir = $(src-dir)/server
+func-dir = $(src-dir)/func
+types-dir = $(src-dir)/pq_types
 
 .PHONY up:
 up:

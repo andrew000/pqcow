@@ -1,3 +1,4 @@
 /.env
 pqcow.egg-info
 dilithium.key
+.venv
