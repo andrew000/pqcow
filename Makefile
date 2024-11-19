@@ -2,6 +2,7 @@ include .env
 export
 
 src-dir = pqcow
+tests-dir = tests
 client-dir = $(src-dir)/client
 server-dir = $(src-dir)/server
 func-dir = $(src-dir)/func
@@ -23,18 +24,18 @@ pull:
 .PHONY lint:
 lint:
 	echo "Running ruff..."
-	uv run ruff check --config pyproject.toml --diff $(src-dir)
+	uv run ruff check --config pyproject.toml --diff $(src-dir) $(tests-dir)
 
 .PHONY format:
 format:
 	echo "Running ruff check with --fix..."
-	uv run ruff check --config pyproject.toml --fix --unsafe-fixes $(src-dir)
+	uv run ruff check --config pyproject.toml --fix --unsafe-fixes $(src-dir) $(tests-dir)
 
 	echo "Running ruff..."
-	uv run ruff format --config pyproject.toml $(src-dir)
+	uv run ruff format --config pyproject.toml $(src-dir) $(tests-dir)
 
 	echo "Running isort..."
-	uv run isort --settings-file pyproject.toml $(src-dir)
+	uv run isort --settings-file pyproject.toml $(src-dir) $(tests-dir)
 
 .PHONE mypy:
 mypy:

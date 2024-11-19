@@ -2,13 +2,19 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from contextlib import suppress
 from enum import Enum
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import oqs  # type: ignore[import-untyped]
 from websockets import ConnectionClosed, ConnectionClosedError
 
 from pqcow.client import Client
+from pqcow.key_storage.key_storage import JSONKeyStorage
+
+if TYPE_CHECKING:
+    from key_storage.base import Key
 
 logging.basicConfig(format="%(asctime)s %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -19,6 +25,12 @@ class CloseReason(Enum):
     SERVER_CLOSED = 1
     TASK_CANCELLED = 2
     ERROR = 3
+
+
+def create_dilithium_keypair() -> bytes:
+    dilithium = oqs.Signature("Dilithium3")
+    dilithium.generate_keypair()
+    return dilithium.export_secret_key()
 
 
 def recv_user_input() -> str:
@@ -55,19 +67,33 @@ async def sender(client: Client) -> CloseReason:
         return CloseReason.ERROR
 
 
-async def start_client(host: str, port: int) -> CloseReason:
-    dilithium_path = Path("dilithium.key")
+async def start_client(host: str, port: int, identity: str) -> CloseReason:
+    storage = JSONKeyStorage(Path("storage.enc"), "salt")
 
-    if not dilithium_path.exists():
-        dilithium = oqs.Signature("Dilithium3")
-        dilithium.generate_keypair()
-        private_key = dilithium.export_secret_key()
+    with suppress(ValueError):
+        storage.create_storage("password")
 
-        dilithium_path.write_bytes(private_key)
+    storage.load_storage("password")
 
-    dilithium = oqs.Signature("Dilithium3", secret_key=dilithium_path.read_bytes())
+    try:
+        key: Key = storage.get_key(identity)
+    except KeyError:
+        logger.info("Identity key for `%s` not found. Would you like to create one?", identity)
+        create = input("[Y/n]: ")
 
-    client = Client(host, port, dilithium)
+        if create.casefold() != "y":
+            return CloseReason.ERROR
+
+        logger.info("Creating Identity key for `%s`...", identity)
+
+        storage.set_key(identity, create_dilithium_keypair())
+        storage.save_storage("password")
+
+        logger.info("Identity key for `%s` created and saved", identity)
+
+        key = storage.get_key(identity)
+
+    client = Client(host, port, signature=oqs.Signature("Dilithium3", key.key))
 
     try:
         await client.connect()
@@ -90,7 +116,7 @@ async def start_client(host: str, port: int) -> CloseReason:
 
 if __name__ == "__main__":
     while True:
-        close_reason = asyncio.run(start_client("192.168.0.111", 8080))
+        close_reason = asyncio.run(start_client("127.0.0.1", 8080, identity="Ident"))
 
         match close_reason:
             case CloseReason.CLIENT_CLOSED | CloseReason.TASK_CANCELLED:

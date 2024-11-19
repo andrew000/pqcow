@@ -2,3 +2,9 @@
 pqcow.egg-info
 dilithium.key
 .venv
+__pycache__
+/dist
+/liboqs
+/.idea
+storage.enc
+liboqs-python/

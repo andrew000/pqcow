@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import signal
 from pathlib import Path
 
 import oqs  # type: ignore[import-untyped]
@@ -25,6 +26,8 @@ async def start_server(host: str, port: int) -> None:
     dilithium = oqs.Signature("Dilithium3", secret_key=dilithium_path.read_bytes())
 
     server = Server(host, port, dilithium)
+    signal.signal(signal.SIGINT, server.signal_handler)
+    # signal.signal(signal.SIGTERM, self._signal_handler)
     await server.start()
 
 

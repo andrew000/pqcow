@@ -13,9 +13,9 @@ if TYPE_CHECKING:
 
 
 def encrypt_data(shared_secret: AESGCM, plaintext: bytes) -> tuple[bytes, bytes]:
-    nonce = secrets.token_bytes(12)
+    nonce = secrets.token_bytes(nbytes=12)
 
-    padder = PKCS7(128).padder()
+    padder = PKCS7(block_size=128).padder()
     padded_data = padder.update(plaintext) + padder.finalize()
 
     ciphertext = shared_secret.encrypt(nonce, padded_data, None)
@@ -26,7 +26,7 @@ def encrypt_data(shared_secret: AESGCM, plaintext: bytes) -> tuple[bytes, bytes]
 def decrypt_data(shared_secret: AESGCM, nonce: bytes, ciphertext: bytes) -> bytes:
     padded_data = shared_secret.decrypt(nonce, ciphertext, None)
 
-    unpadder = PKCS7(128).unpadder()
+    unpadder = PKCS7(block_size=128).unpadder()
     return unpadder.update(padded_data) + unpadder.finalize()
 
 

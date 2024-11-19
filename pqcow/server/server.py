@@ -67,14 +67,12 @@ class Server:
         self.connections: set[ServerConnection] = set()
         self.server: WS_Server | None = None
 
-    def _signal_handler(self, signal_number: int, frame_type: FrameType | None) -> None:
+    def signal_handler(self, signal_number: int, frame_type: FrameType | None) -> None:
         logger.info("Received signal %s, frame %s", signal_number, frame_type)
-        cast(WS_Server, self.server).close(close_connections=False)
+        cast(WS_Server, self.server).close(close_connections=True)
 
     async def start(self) -> None:
         self.server = await serve(handler=self.handler, host=self.host, port=self.port)
-        # signal.signal(signal.SIGINT, self._signal_handler)
-        # signal.signal(signal.SIGTERM, self._signal_handler)
 
         with contextlib.suppress(CancelledError):
             await self.server.serve_forever()

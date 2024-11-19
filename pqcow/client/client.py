@@ -11,7 +11,7 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.hashes import SHA3_512
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from oqs import KeyEncapsulation, Signature  # type: ignore[import-untyped]
-from websockets import connect, ConnectionClosed
+from websockets import ConnectionClosed, connect
 from websockets.asyncio.client import ClientConnection
 
 from pqcow.func import receive_data, send_data
@@ -47,7 +47,10 @@ class Client:
         self.shared_secret: AESGCM | None = None
 
     async def connect(self) -> None:
-        self.connection = await connect(uri=urlunparse(("ws", f"{self.address}:{self.port}", "", "", "", "")))
+        self.connection = await connect(
+            uri=urlunparse(("ws", f"{self.address}:{self.port}", "", "", "", "")),
+            compression=None,
+        )
         await self.do_handshake()
 
     async def do_handshake(self) -> None:
