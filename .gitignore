@@ -8,3 +8,4 @@ __pycache__
 /.idea
 storage.enc
 liboqs-python/
+/server.db

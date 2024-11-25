@@ -3,8 +3,8 @@ from .send_message import SendMessage
 from .send_request import REQUEST_TYPES, SendRequest
 
 __all__ = (
+    "REQUEST_TYPES",
     "SendHandshake",
     "SendMessage",
     "SendRequest",
-    "REQUEST_TYPES",
 )

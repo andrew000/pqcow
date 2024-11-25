@@ -1,6 +1,7 @@
-from . import answer_types, request_types
+from . import answer_types, request_types, signed_data
 
 __all__ = (
-    "request_types",
     "answer_types",
+    "request_types",
+    "signed_data",
 )

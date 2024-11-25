@@ -4,8 +4,8 @@ from .handshake import Handshake
 from .ok import OK
 
 __all__ = (
+    "OK",
     "Answer",
     "Error",
     "Handshake",
-    "OK",
 )

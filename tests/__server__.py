@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import signal
 from pathlib import Path
 
+import msgspec.msgpack
 import oqs  # type: ignore[import-untyped]
 
 from pqcow.server import Server
@@ -18,16 +18,25 @@ async def start_server(host: str, port: int) -> None:
 
     if not dilithium_path.exists():
         dilithium = oqs.Signature("Dilithium3")
-        dilithium.generate_keypair()
+        public_key = dilithium.generate_keypair()
         private_key = dilithium.export_secret_key()
 
-        dilithium_path.write_bytes(private_key)
+        dilithium_path.write_bytes(
+            msgspec.msgpack.encode(
+                {"public_key": public_key, "private_key": private_key},
+            ),
+        )
 
-    dilithium = oqs.Signature("Dilithium3", secret_key=dilithium_path.read_bytes())
+    loaded_dilithium: dict[str, bytes] = msgspec.msgpack.decode(dilithium_path.read_bytes())
 
-    server = Server(host, port, dilithium)
-    signal.signal(signal.SIGINT, server.signal_handler)
-    # signal.signal(signal.SIGTERM, self._signal_handler)
+    server = Server(
+        host=host,
+        port=port,
+        signature=oqs.Signature("Dilithium3", secret_key=loaded_dilithium["private_key"]),
+        dilithium_public_key=loaded_dilithium["public_key"],
+        sqlite_path=Path("server.db"),
+    )
+
     await server.start()
 
 

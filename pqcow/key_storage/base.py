@@ -10,14 +10,14 @@ if TYPE_CHECKING:
 
 
 class Key(Struct, kw_only=True):
-    identity: str
-    key: bytes
+    name: str
+    dilithium_public_key: bytes
+    dilithium_private_key: bytes
 
 
 class BaseKeyStorage(metaclass=ABCMeta):
-    def __init__(self, path: Path, salt: str | bytes) -> None:
+    def __init__(self, path: Path) -> None:
         self.path = path
-        self._salt = salt if isinstance(salt, bytes) else salt.encode()
         self._storage: dict[str, Key] = {}
 
     @abstractmethod
@@ -33,10 +33,10 @@ class BaseKeyStorage(metaclass=ABCMeta):
     def close_storage(self) -> bool: ...
 
     @abstractmethod
-    def get_key(self, identity: str) -> Key: ...
+    def get_key(self, name: str) -> Key: ...
 
     @abstractmethod
-    def set_key(self, identity: str, key: bytes) -> bool: ...
+    def set_key(self, *, name: str, public_key: bytes, private_key: bytes) -> Literal[True]: ...
 
     @abstractmethod
-    def del_key(self, identity: str) -> bool: ...
+    def del_key(self, name: str) -> bool: ...

@@ -48,7 +48,7 @@ outdated:
 
 .PHONY sync:
 sync:
-	uv sync --extra dev --extra lint --extra uvloop --link-mode=copy
+	uv sync --extra server --extra dev --extra lint --extra uvloop --link-mode=copy
 
 .PHONY freeze: sync
 freeze:

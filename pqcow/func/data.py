@@ -8,8 +8,6 @@ from cryptography.hazmat.primitives.padding import PKCS7
 
 if TYPE_CHECKING:
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-    from websockets.asyncio.client import ClientConnection
-    from websockets.asyncio.server import ServerConnection
 
 
 def encrypt_data(shared_secret: AESGCM, plaintext: bytes) -> tuple[bytes, bytes]:
@@ -30,14 +28,13 @@ def decrypt_data(shared_secret: AESGCM, nonce: bytes, ciphertext: bytes) -> byte
     return unpadder.update(padded_data) + unpadder.finalize()
 
 
-async def send_data(connection: ClientConnection | ServerConnection, shared_secret: AESGCM, data: bytes) -> None:
+def prepare_data_to_send(shared_secret: AESGCM, data: bytes) -> bytes:
     nonce, ciphertext = encrypt_data(shared_secret, data)
-    packed_data = struct.pack("!I", len(nonce)) + nonce + ciphertext
 
-    await connection.send(packed_data)
+    return struct.pack("!I", len(nonce)) + nonce + ciphertext
 
 
-async def receive_data(shared_secret: AESGCM, data: bytes) -> bytes:
+def pre_process_incom_data(shared_secret: AESGCM, data: bytes) -> bytes:
     nonce_len, encrypted_data = struct.unpack("!I", data[:4])[0], data[4:]
     nonce, ciphertext = encrypted_data[:nonce_len], encrypted_data[nonce_len:]
 

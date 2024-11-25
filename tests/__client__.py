@@ -8,13 +8,14 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import oqs  # type: ignore[import-untyped]
+from cryptography.fernet import InvalidToken
 from websockets import ConnectionClosed, ConnectionClosedError
 
-from pqcow.client import Client
+from pqcow.client import AsyncClient
 from pqcow.key_storage.key_storage import JSONKeyStorage
 
 if TYPE_CHECKING:
-    from key_storage.base import Key
+    from pqcow.key_storage.base import Key
 
 logging.basicConfig(format="%(asctime)s %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -25,19 +26,20 @@ class CloseReason(Enum):
     SERVER_CLOSED = 1
     TASK_CANCELLED = 2
     ERROR = 3
+    LOCAL_ERROR = 4
 
 
-def create_dilithium_keypair() -> bytes:
+def create_dilithium_keypair() -> tuple[bytes, bytes]:
     dilithium = oqs.Signature("Dilithium3")
-    dilithium.generate_keypair()
-    return dilithium.export_secret_key()
+    public_key = dilithium.generate_keypair()
+    return public_key, dilithium.export_secret_key()
 
 
 def recv_user_input() -> str:
     return input("Enter message to send: ")
 
 
-async def sender(client: Client) -> CloseReason:
+async def sender(client: AsyncClient) -> CloseReason:
     try:
         while True:
             message = await asyncio.to_thread(recv_user_input)
@@ -52,53 +54,76 @@ async def sender(client: Client) -> CloseReason:
                 #     *[client.send_message(1, f"Message {i}") for i in range(10_000)]
                 # )
 
-            except ConnectionClosed:
-                logger.info("Connection closed by the server")
+            except ConnectionClosed as e:
+                logger.info("Connection closed by the server. Reason: %s", e.rcvd.reason)
                 return CloseReason.SERVER_CLOSED
 
-            # await asyncio.sleep(0.1)
+            await asyncio.sleep(0.1)
 
     except asyncio.CancelledError:
         logger.info("Sender task was cancelled")
         return CloseReason.TASK_CANCELLED
 
     except Exception as e:
-        logger.exception("An error occurred while sending message: %s", type(e).mro())
+        logger.exception("An error occurred while sending message: %s", e.args)
         return CloseReason.ERROR
 
 
-async def start_client(host: str, port: int, identity: str) -> CloseReason:
-    storage = JSONKeyStorage(Path("storage.enc"), "salt")
+async def start_client(
+    host: str,
+    port: int,
+    name: str,
+    storage_path: Path,
+    storage_key: str | bytes,
+) -> CloseReason:
+    storage = JSONKeyStorage(storage_path)
 
     with suppress(ValueError):
-        storage.create_storage("password")
-
-    storage.load_storage("password")
+        storage.create_storage(storage_key)
 
     try:
-        key: Key = storage.get_key(identity)
+        storage.load_storage(storage_key)
+    except InvalidToken:
+        logger.exception("Invalid storage key")
+        return CloseReason.LOCAL_ERROR
+
+    try:
+        key: Key = storage.get_key(name)
     except KeyError:
-        logger.info("Identity key for `%s` not found. Would you like to create one?", identity)
+        logger.info("Identity key for `%s` not found. Would you like to create one?", name)
         create = input("[Y/n]: ")
 
         if create.casefold() != "y":
             return CloseReason.ERROR
 
-        logger.info("Creating Identity key for `%s`...", identity)
+        logger.info("Creating Identity key for `%s`...", name)
 
-        storage.set_key(identity, create_dilithium_keypair())
-        storage.save_storage("password")
+        public_key, private_key = create_dilithium_keypair()
+        storage.set_key(name=name, public_key=public_key, private_key=private_key)
+        storage.save_storage(storage_key)
+        key = storage.get_key(name)
 
-        logger.info("Identity key for `%s` created and saved", identity)
+        logger.info("Identity key for `%s` created and saved", name)
 
-        key = storage.get_key(identity)
-
-    client = Client(host, port, signature=oqs.Signature("Dilithium3", key.key))
+    logger.info("Loaded Identity key for `%s`; %s", name, key.dilithium_public_key.hex())
+    client = AsyncClient(
+        host=host,
+        port=port,
+        signature=oqs.Signature("Dilithium3", key.dilithium_private_key),
+        public_key=key.dilithium_public_key,
+        username=name,
+    )
 
     try:
         await client.connect()
     except ConnectionRefusedError:
         logger.info("Could not connect to server at %s:%s", host, port)
+        return CloseReason.ERROR
+
+    try:
+        await client.register()
+    except Exception as e:
+        logger.exception("An error occurred while registering: %s", type(e).mro())
         return CloseReason.ERROR
 
     _task = asyncio.create_task(sender(client))
@@ -107,8 +132,10 @@ async def start_client(host: str, port: int, identity: str) -> CloseReason:
         async for answer in client:
             logger.info("Received answer: %s", answer)
 
-    except ConnectionClosedError:
-        logger.info("Connection closed by the server")
+    except ConnectionClosedError as e:
+        logger.info("Connection closed by the server. Reason: %s", e.rcvd.reason)
+
+    finally:
         _task.cancel()
 
     return await _task
@@ -116,7 +143,15 @@ async def start_client(host: str, port: int, identity: str) -> CloseReason:
 
 if __name__ == "__main__":
     while True:
-        close_reason = asyncio.run(start_client("127.0.0.1", 8080, identity="Ident"))
+        close_reason = asyncio.run(
+            start_client(
+                "127.0.0.1",
+                8080,
+                name="Andrew",
+                storage_path=Path("storage.enc"),
+                storage_key=input("Enter storage key: "),
+            ),
+        )
 
         match close_reason:
             case CloseReason.CLIENT_CLOSED | CloseReason.TASK_CANCELLED:
@@ -133,5 +168,8 @@ if __name__ == "__main__":
 
                 if reconnect.lower() != "y":
                     break
+
+            case CloseReason.LOCAL_ERROR:
+                break
 
     logger.info("Exiting client...")

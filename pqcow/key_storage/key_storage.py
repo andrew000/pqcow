@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Literal, Self
 import msgspec.msgpack
 from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
 from pqcow.key_storage.base import BaseKeyStorage, Key
 
@@ -15,28 +15,25 @@ if TYPE_CHECKING:
 
 
 class JSONKeyStorage(BaseKeyStorage):
-    def __init__(self, path: Path, salt: str | bytes) -> None:
-        super().__init__(path, salt)
+    def __init__(self, path: Path) -> None:
+        super().__init__(path)
 
-    def create_storage(self, password: str) -> Literal[True]:
+    def create_storage(self, storage_key: str | bytes) -> Literal[True]:
         if self.path.exists():
             msg = "Storage already exists"
             raise ValueError(msg)
 
-        kdf = PBKDF2HMAC(
-            algorithm=hashes.SHA256(),
-            length=32,
-            salt=self._salt,
-            iterations=480000,
-        )
-        key = base64.urlsafe_b64encode(kdf.derive(password.encode()))
-        fernet = Fernet(key)
-        data = fernet.encrypt(msgspec.json.encode({}))
+        if isinstance(storage_key, str):
+            storage_key = storage_key.encode()
 
+        kdf = HKDF(algorithm=hashes.SHA3_512(), length=32, salt=None, info=b"pqcow")
+        fernet = Fernet(base64.urlsafe_b64encode(kdf.derive(storage_key)))
+
+        data = fernet.encrypt(msgspec.json.encode({}))
         self.path.write_bytes(data)
         return True
 
-    def load_storage(self, password: str) -> Self:
+    def load_storage(self, storage_key: str | bytes) -> Self:
         if self._storage:
             msg = "Storage is already loaded"
             raise ValueError(msg)
@@ -45,34 +42,29 @@ class JSONKeyStorage(BaseKeyStorage):
             msg = "Storage does not exist. Use create_storage() to create a new storage"
             raise FileNotFoundError(msg)
 
-        data = self.path.read_bytes()
-        kdf = PBKDF2HMAC(
-            algorithm=hashes.SHA256(),
-            length=32,
-            salt=self._salt,
-            iterations=480000,
-        )
-        key = base64.urlsafe_b64encode(kdf.derive(password.encode()))
-        fernet = Fernet(key)
+        if isinstance(storage_key, str):
+            storage_key = storage_key.encode()
 
+        kdf = HKDF(algorithm=hashes.SHA3_512(), length=32, salt=None, info=b"pqcow")
+        fernet = Fernet(base64.urlsafe_b64encode(kdf.derive(storage_key)))
+
+        data = self.path.read_bytes()
         self._storage.update(msgspec.json.decode(fernet.decrypt(data), type=dict[str, Key]))
+
         return self
 
-    def save_storage(self, password: str, close: bool = False) -> bool:
+    def save_storage(self, password: str | bytes, close: bool = False) -> bool:
         if not self._storage:
             msg = "Storage is empty"
             raise ValueError(msg)
 
-        kdf = PBKDF2HMAC(
-            algorithm=hashes.SHA256(),
-            length=32,
-            salt=self._salt,
-            iterations=480000,
-        )
-        key = base64.urlsafe_b64encode(kdf.derive(password.encode()))
-        fernet = Fernet(key)
-        data = fernet.encrypt(msgspec.json.encode(self._storage))
+        if isinstance(password, str):
+            password = password.encode()
 
+        kdf = HKDF(algorithm=hashes.SHA3_512(), length=32, salt=None, info=b"pqcow")
+        fernet = Fernet(base64.urlsafe_b64encode(kdf.derive(password)))
+
+        data = fernet.encrypt(msgspec.json.encode(self._storage))
         self.path.write_bytes(data)
 
         if close:
@@ -84,13 +76,17 @@ class JSONKeyStorage(BaseKeyStorage):
         self._storage.clear()
         return True
 
-    def get_key(self, identity: str) -> Key:
-        return self._storage[identity]
+    def get_key(self, name: str) -> Key:
+        return self._storage[name]
 
-    def set_key(self, identity: str, key: bytes) -> bool:
-        self._storage[identity] = Key(identity=identity, key=key)
+    def set_key(self, *, name: str, public_key: bytes, private_key: bytes) -> Literal[True]:
+        self._storage[name] = Key(
+            name=name,
+            dilithium_public_key=public_key,
+            dilithium_private_key=private_key,
+        )
         return True
 
-    def del_key(self, identity: str) -> bool:
-        del self._storage[identity]
+    def del_key(self, name: str) -> bool:
+        del self._storage[name]
         return True
