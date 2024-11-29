@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Literal, cast
 from urllib.parse import urlunparse
 from uuid import uuid4
 
@@ -19,7 +19,9 @@ from pqcow.func import pre_process_incom_data, prepare_data_to_send
 from pqcow.pq_types.answer_types import Answer, Handshake
 from pqcow.pq_types.request_types import REQUEST_TYPES, SendHandshake, SendMessage, SendRequest
 from pqcow.pq_types.request_types.register_request import RegisterRequest
+from pqcow.pq_types.request_types.resolve_user import ResolveUserByDilithium
 from pqcow.pq_types.signed_data import SignedData
+from pqcow.server.exceptions import SignatureVerificationError
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -139,7 +141,7 @@ class AsyncClient(BaseAsyncClient):
                     continue
 
                 try:
-                    raw_data = pre_process_incom_data(
+                    signed_data = pre_process_incom_data(
                         shared_secret=self.shared_secret,
                         data=cast(bytes, message),
                     )
@@ -148,7 +150,13 @@ class AsyncClient(BaseAsyncClient):
                     logger.exception("An error occurred while receiving data: %s", e.args)
                     continue
 
-                answer = msgspec.msgpack.decode(raw_data, type=Answer)
+                try:
+                    self._verify_signature(signed_data)
+                except SignatureVerificationError as e:
+                    logger.exception("An error occurred while verifying the signature: %s", e.args)
+                    continue
+
+                answer = msgspec.msgpack.decode(signed_data.data, type=Answer)
 
                 try:
                     event_info = self.events[answer.event_id]
@@ -166,6 +174,18 @@ class AsyncClient(BaseAsyncClient):
                     self.events.pop(answer.event_id, None)
                     yield answer, event_info
 
+    def _verify_signature(self, signed_data: SignedData) -> Literal[True]:
+        is_ok = self.signature.verify(
+            message=signed_data.data,
+            signature=signed_data.sign,
+            public_key=self.server_dilithium_public_key,
+        )
+
+        if not is_ok:
+            raise SignatureVerificationError(dilithium_public_key=self.public_key)
+
+        return True
+
     async def send_request(self, request: REQUEST_TYPES) -> None:
         if not self.connection:
             msg = "Client is not connected"
@@ -180,20 +200,23 @@ class AsyncClient(BaseAsyncClient):
             send_request = SendRequest(event_id=event_id, request=request)
             self.events[event_id] = send_request
 
-            raw_data = msgspec.msgpack.encode(send_request)
-            signed_data = SignedData(data=raw_data, sign=self.signature.sign(raw_data))
-
             data_to_send = prepare_data_to_send(
                 shared_secret=self.shared_secret,
-                data=msgspec.msgpack.encode(signed_data),
+                data=send_request,
+                sign=self.signature,
             )
             await self.connection.send(data_to_send)
 
-    async def send_message(self, user_id: int | str, text: str) -> None:
-        await self.send_request(SendMessage(user_id=user_id, text=text))
-
     async def register(self) -> None:
         await self.send_request(RegisterRequest(username=self.username))
+
+    async def resolve_user(self, dilithium_public_key: bytes) -> None:
+        await self.send_request(ResolveUserByDilithium(dilithium_public_key=dilithium_public_key))
+
+    async def send_message(self, user_id: int, text: str) -> None:
+        await self.send_request(
+            SendMessage(user_id=user_id, sign=self.signature.sign(text.encode()), text=text),
+        )
 
 
 def create_hkdf() -> HKDF:

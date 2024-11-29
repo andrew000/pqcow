@@ -14,20 +14,24 @@ from websockets import ConnectionClosed, serve
 
 from pqcow.func import pre_process_incom_data, prepare_data_to_send
 from pqcow.pq_types.answer_types import OK, Answer, Error, Handshake
+from pqcow.pq_types.answer_types.resolved_user import ResolvedUser
 from pqcow.pq_types.request_types import SendHandshake, SendMessage, SendRequest
 from pqcow.pq_types.request_types.chat_list_main import ChatListMain
 from pqcow.pq_types.request_types.register_request import RegisterRequest
+from pqcow.pq_types.request_types.resolve_user import ResolveUserByDilithium
 from pqcow.pq_types.signed_data import SignedData
 from pqcow.server.client_data import ClientData, UnregisteredClientData
-from pqcow.server.db.db import ServerDatabase
-from pqcow.server.db.tables import CHATS_TABLE, MESSAGES_TABLE, USERS_TABLE
-from pqcow.server.exceptions import SignatureVerificationError
+from pqcow.server.db.base import init_db
+from pqcow.server.exceptions import ChatNotFoundError, SignatureVerificationError
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
     from websockets.asyncio.server import Server as WS_Server
     from websockets.asyncio.server import ServerConnection
+
+    from pqcow.server.db.db import ServerDatabase
+    from pqcow.server.db.models.messages import MessagesModel
+    from pqcow.server.db.models.users import UserModel
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -36,7 +40,7 @@ logger.setLevel(logging.INFO)
 async def do_handshake(
     *,
     connection: ServerConnection,
-    db: ServerDatabase,
+    db: ServerDatabase[async_sessionmaker[AsyncSession]],
     signature: Signature,
     dilithium_public_key: bytes,
 ) -> UnregisteredClientData | ClientData:
@@ -78,7 +82,12 @@ async def do_handshake(
     shared_secret = AESGCM(create_hkdf().derive(shared_secret))
     logger.info("%s Handshake successful", connection.remote_address)
 
-    user = await db.resolve_user_by_dilithium(send_handshake.dilithium_public_key)
+    async with db.sessionmaker() as session:
+        user = await db.resolve_user_by_dilithium(
+            session=session,
+            initiator_id=None,
+            dilithium_public_key=send_handshake.dilithium_public_key,
+        )
 
     if not user:
         return UnregisteredClientData(
@@ -87,8 +96,8 @@ async def do_handshake(
         )
 
     return ClientData(
-        user_id=user[0] if user else None,
-        username=user[1] if user else None,
+        user_id=user.id,
+        username=user.username,
         dilithium_public_key=send_handshake.dilithium_public_key,
         shared_secret=shared_secret,
     )
@@ -101,7 +110,7 @@ class Server:
         port: int,
         signature: Signature,
         dilithium_public_key: bytes,
-        sqlite_path: Path,
+        db: ServerDatabase[async_sessionmaker[AsyncSession]],
     ) -> None:
         """
         Initialize the Server Instance.
@@ -112,33 +121,29 @@ class Server:
         :type port: int
         :param signature: The signature of server.
         :type signature: Signature
+        :param dilithium_public_key: The dilithium public key of server.
+        :type dilithium_public_key: bytes
+        :param db: The database instance.
+        :type db: ServerDatabase[async_sessionmaker[AsyncSession]]
         """
         self.host = host
         self.port = port
         self.signature = signature
         self.dilithium_public_key = dilithium_public_key
-        self.db = ServerDatabase(sqlite_path)
+        self.db = db
         self.connections: set[ServerConnection] = set()
-        self.server: WS_Server | None = None
+        self.ws: WS_Server | None = None
 
     async def start(self) -> None:
-        await self.db.create_connection()
+        await init_db(self.db.engine)
 
-        # Tables
-        await self.db.connection.execute("BEGIN TRANSACTION")
-        await self.db.connection.executescript(USERS_TABLE)
-        await self.db.connection.executescript(CHATS_TABLE)
-        await self.db.connection.executescript(MESSAGES_TABLE)
-
-        await self.db.connection.commit()
-
-        self.server = await serve(handler=self.handler, host=self.host, port=self.port)
+        self.ws = await serve(handler=self.handler, host=self.host, port=self.port)
 
         with suppress(asyncio.CancelledError):
-            async with self.server:
+            async with self.ws:
                 await asyncio.get_running_loop().create_future()  # Run forever
 
-        await self.db.connection.close()
+        await self.db.close()
 
     async def handler(self, connection: ServerConnection) -> None:
         self.connections.add(connection)
@@ -157,21 +162,19 @@ class Server:
                     connection.remote_address,
                 )
                 client_data: ClientData | Literal[False] = await self._registration(
-                    connection,
-                    client_data,
+                    connection=connection,
+                    client_data=client_data,
                 )
 
                 if not client_data:
                     return
 
             async for message in connection:
-                decrypted_data = pre_process_incom_data(
-                    client_data.shared_secret,
-                    cast(bytes, message),
+                signed_data: SignedData = pre_process_incom_data(
+                    shared_secret=client_data.shared_secret,
+                    data=cast(bytes, message),
                 )
-                signed_data: SignedData = msgspec.msgpack.decode(decrypted_data, type=SignedData)
-
-                await self._verify_signature(signed_data, cast(ClientData, client_data))
+                self._verify_signature(signed_data, cast(ClientData, client_data))
 
                 send_request: SendRequest = msgspec.msgpack.decode(
                     signed_data.data,
@@ -186,26 +189,85 @@ class Server:
                             user_id,
                             text,
                         )
+
+                        try:
+                            await self.send_message(
+                                chat_id=1,
+                                sender_id=cast(ClientData, client_data).user_id,
+                                receiver_id=user_id,
+                                message=text,
+                            )
+                        except ChatNotFoundError:
+                            data_to_send = prepare_data_to_send(
+                                shared_secret=cast(ClientData, client_data).shared_secret,
+                                sign=self.signature,
+                                data=Answer(
+                                    event_id=send_request.event_id,
+                                    answer=Error(code=2, message="Chat not found"),
+                                ),
+                            )
+                            await connection.send(data_to_send)
+                            continue
+
                         data_to_send = prepare_data_to_send(
                             shared_secret=client_data.shared_secret,
-                            data=msgspec.msgpack.encode(
-                                Answer(event_id=send_request.event_id, answer=OK()),
-                            ),
+                            sign=self.signature,
+                            data=Answer(event_id=send_request.event_id, answer=OK(data=None)),
                         )
                         await connection.send(data_to_send)
 
-                    case RegisterRequest():
-                        logger.info("%s Received RegisterRequest", connection.remote_address)
-                        data_to_send = prepare_data_to_send(
-                            shared_secret=client_data.shared_secret,
-                            data=msgspec.msgpack.encode(
-                                Answer(
+                    # case RegisterRequest():
+                    #     logger.info("%s Received RegisterRequest", connection.remote_address)
+                    #     data_to_send = prepare_data_to_send(
+                    #         shared_secret=client_data.shared_secret,
+                    #         sign=self.signature,
+                    #         data=Answer(
+                    #                 event_id=send_request.event_id,
+                    #                 answer=Error(code=1, message="Already registered"),
+                    #         ),
+                    #     )
+                    #     await connection.send(data_to_send)
+
+                    case ResolveUserByDilithium(dilithium_public_key=dilithium_public_key):
+                        logger.info(
+                            "%s Received ResolveUserByDilithium(dilithium_public_key=%s)",
+                            connection.remote_address,
+                            dilithium_public_key,
+                        )
+                        user = await self.resolve_user_by_dilithium(
+                            initiator_id=cast(ClientData, client_data).user_id,
+                            dilithium_public_key=dilithium_public_key,
+                        )
+
+                        if not user:
+                            data = prepare_data_to_send(
+                                shared_secret=client_data.shared_secret,
+                                sign=self.signature,
+                                data=Answer(
                                     event_id=send_request.event_id,
-                                    answer=Error(code=1, message="Already registered"),
+                                    answer=Error(code=1, message="User not found"),
+                                ),
+                            )
+
+                            await connection.send(data)
+                            continue
+
+                        data = prepare_data_to_send(
+                            shared_secret=client_data.shared_secret,
+                            sign=self.signature,
+                            data=Answer(
+                                event_id=send_request.event_id,
+                                answer=OK(
+                                    data=ResolvedUser(
+                                        id=user.id,
+                                        username=user.username,
+                                        dilithium_public_key=user.dilithium_public_key,
+                                    ),
                                 ),
                             ),
                         )
-                        await connection.send(data_to_send)
+
+                        await connection.send(data)
 
                     case ChatListMain():
                         logger.info("%s Received ChatListMain", connection.remote_address)
@@ -244,7 +306,7 @@ class Server:
         finally:
             self.connections.discard(connection)
 
-    async def _verify_signature(
+    def _verify_signature(
         self,
         signed_data: SignedData,
         client_data: ClientData,
@@ -262,16 +324,14 @@ class Server:
 
     async def _registration(
         self,
+        *,
         connection: ServerConnection,
         client_data: UnregisteredClientData,
     ) -> ClientData | Literal[False]:
-        register_request = await connection.recv()
-        decrypted_data = pre_process_incom_data(
-            client_data.shared_secret,
-            cast(bytes, register_request),
+        signed_data = pre_process_incom_data(
+            shared_secret=client_data.shared_secret,
+            data=cast(bytes, await connection.recv()),
         )
-
-        signed_data: SignedData = msgspec.msgpack.decode(decrypted_data, type=SignedData)
 
         is_ok = self.signature.verify(
             message=signed_data.data,
@@ -302,17 +362,48 @@ class Server:
             await connection.close(reason="Invalid data received. Register wanted")
             return False
 
-        user_id = await self.db.register_user(
-            username=cast(RegisterRequest, register_request).username,
-            dilithium_public_key=client_data.dilithium_public_key,
-        )
+        async with self.db.sessionmaker() as session:
+            user = await self.db.register_user(
+                session=session,
+                username=send_request.request.username,
+                dilithium_public_key=client_data.dilithium_public_key,
+            )
 
         return ClientData(
-            user_id=user_id,
-            username=cast(RegisterRequest, register_request).username,
+            user_id=user.id,
+            username=send_request.request.username,
             dilithium_public_key=client_data.dilithium_public_key,
             shared_secret=client_data.shared_secret,
         )
+
+    async def send_message(
+        self,
+        chat_id: int,
+        sender_id: int,
+        receiver_id: int,
+        message: str,
+    ) -> MessagesModel:
+        async with self.db.sessionmaker() as session:
+            return await self.db.send_message(
+                session=session,
+                chat_id=chat_id,
+                sender_id=sender_id,
+                receiver_id=receiver_id,
+                text=message,
+                signature=self.signature.sign(message.encode("utf-8")),
+            )
+
+    async def resolve_user_by_dilithium(
+        self,
+        initiator_id: int,
+        dilithium_public_key: bytes,
+    ) -> UserModel | None:
+        async with self.db.sessionmaker() as session:
+            return await self.db.resolve_user_by_dilithium(
+                session=session,
+                initiator_id=initiator_id,
+                dilithium_public_key=dilithium_public_key,
+            )
 
 
 def create_hkdf() -> HKDF:

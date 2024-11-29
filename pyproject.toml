@@ -1,11 +1,11 @@
 [project]
 name = "pqcow"
 version = "0.0.1"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = [
     "msgspec==0.18.6",
     "pqcow-liboqs==0.10.1.dev0",
-    "cryptography==43.0.3",
+    "cryptography==44.0.0",
     "websockets==14.1",
 ]
 
@@ -15,12 +15,13 @@ package = true
 [project.optional-dependencies]
 server = [
     "aiosqlite==0.20.0",
+    "sqlalchemy==2.0.36",
 ]
 dev = [
     "isort==5.13.2",
     "pre-commit==4.0.1",
     "ruff==0.8.0",
-    "bandit==1.7.10",
+    "bandit==1.8.0",
 ]
 lint = [
     "mypy==1.13.0",

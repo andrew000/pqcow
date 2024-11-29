@@ -1,73 +1,141 @@
-from collections.abc import Iterable
-from pathlib import Path
-from sqlite3 import Row
-from typing import Any, cast
+from __future__ import annotations
 
-import aiosqlite
-from aiosqlite import Cursor
+from typing import TYPE_CHECKING, Any, cast
+
+from sqlalchemy import select
+from sqlalchemy.dialects.sqlite import insert
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
+
+from pqcow.server.db.models.chats import ChatModel
+from pqcow.server.db.models.messages import MessagesModel
+from pqcow.server.db.models.users import UserModel
+from pqcow.server.exceptions import ChatNotFoundError
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
+    from sqlite3 import Row
 
 
-def dict_factory(cursor: Cursor, row: Row) -> dict[str, str]:
-    fields = [column[0] for column in cursor.description]
-    return dict(zip(fields, row, strict=False))
-
-
-class ServerDatabase:
-    def __init__(self, db_path: Path) -> None:
-        self.db_path = db_path
-        self._connection: aiosqlite.Connection | None = None
-
-    async def create_connection(self) -> None:
-        if self._connection:
-            msg = "Connection already exists"
-            raise RuntimeError(msg)
-
-        self._connection = await aiosqlite.connect(self.db_path)
-        self._connection.row_factory = cast(type[Any], dict_factory)
+class ServerDatabase[T: async_sessionmaker[AsyncSession]]:
+    def __init__(self, engine: AsyncEngine, sessionmaker: T) -> None:
+        self._engine = engine
+        self._sessionmaker = sessionmaker
+        self.is_closed = False
 
     @property
-    def connection(self) -> aiosqlite.Connection:
-        if not self._connection:
-            msg = "Connection does not exist"
-            raise RuntimeError(msg)
+    def engine(self) -> AsyncEngine:
+        return self._engine
 
-        return self._connection
+    @property
+    def sessionmaker(self) -> T:
+        return self._sessionmaker
 
-    @connection.getter
-    def connection(self) -> aiosqlite.Connection:
-        if not self._connection:
-            msg = "Connection does not exist"
-            raise RuntimeError(msg)
+    async def close(self) -> None:
+        self.is_closed = True
+        await self._engine.dispose()
 
-        return self._connection
-
-    async def resolve_user_by_dilithium(
-        self,
+    @staticmethod
+    async def register_user(
+        session: AsyncSession,
+        username: str,
         dilithium_public_key: bytes,
-    ) -> tuple[int, str] | None:
-        async with self.connection.execute(
-            "SELECT id, username FROM users WHERE dilithium_public_key = ?",
-            (dilithium_public_key,),
-        ) as cursor:
-            row: Row | None = await cursor.fetchone()
+    ) -> UserModel:
+        stmt: Any = select(UserModel).filter(UserModel.username == username)
+        user = await session.scalar(stmt)
 
-        return (row["id"], row["username"]) if row else None
+        if not user:
+            stmt = (
+                insert(UserModel)
+                .values(
+                    username=username,
+                    dilithium_public_key=dilithium_public_key,
+                )
+                # .on_conflict_do_nothing(index_elements=["dilithium_public_key"])
+                .returning(UserModel)
+            )
+            user = await session.scalar(stmt)
+            await session.commit()
 
-    async def register_user(self, username: str, dilithium_public_key: bytes) -> int:
-        async with self.connection.execute(
-            "INSERT INTO users (username, dilithium_public_key) "
-            "VALUES (?, ?) "
-            "ON CONFLICT DO NOTHING "
-            "RETURNING id",
-            (username, dilithium_public_key),
-        ) as cursor:
-            user_id = cast(dict[str, Any], await cursor.fetchone())
-            await self.connection.commit()
-            return user_id["id"]
+        return cast(UserModel, user)
 
-    async def chat_list_main(self, user_id: int) -> Iterable[Row]:
-        async with self.connection.execute(
-            "SELECT id, user_id, chat_with_user_id, created_at FROM chats WHERE user_id = ?",
-            (user_id,),
-        ) as cursor:
-            return await cursor.fetchall()
+    @staticmethod
+    async def resolve_user_by_dilithium(
+        session: AsyncSession,
+        initiator_id: int | None,
+        dilithium_public_key: bytes,
+    ) -> UserModel | None:
+        """
+        Resolve user by dilithium public key.
+
+        This also creates a chat with the user if it does not exist.
+        """
+        stmt: Any = select(UserModel).filter(UserModel.dilithium_public_key == dilithium_public_key)
+        user = await session.scalar(stmt)
+
+        if initiator_id is not None and user:
+            stmt = (
+                insert(ChatModel)
+                .values(
+                    user_id=initiator_id,
+                    chat_with_user_id=user.id,
+                )
+                .on_conflict_do_nothing(index_elements=["user_id", "chat_with_user_id"])
+            )
+            await session.execute(stmt)
+
+            stmt = (
+                insert(ChatModel)
+                .values(
+                    user_id=user.id,
+                    chat_with_user_id=initiator_id,
+                )
+                .on_conflict_do_nothing(index_elements=["user_id", "chat_with_user_id"])
+            )
+            await session.execute(stmt)
+
+            await session.commit()
+
+        return user
+
+    @staticmethod
+    async def chat_list_main(
+        session: AsyncSession,
+        user_id: int,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> Iterable[Row]: ...
+
+    @staticmethod
+    async def send_message(
+        session: AsyncSession,
+        chat_id: int,
+        sender_id: int,
+        receiver_id: int,
+        text: str,
+        signature: bytes,
+    ) -> MessagesModel:
+        # Select chat
+        stmt = select(ChatModel).filter(
+            ChatModel.user_id == sender_id,
+            ChatModel.chat_with_user_id == receiver_id,
+        )
+        chat = await session.scalar(stmt)
+
+        if not chat:
+            raise ChatNotFoundError(chat_id=chat_id)
+
+        # Insert message
+        stmt = (
+            insert(MessagesModel)
+            .values(
+                chat_id=chat_id,
+                sender_id=sender_id,
+                message=text,
+                signature=signature,
+            )
+            .returning(MessagesModel)
+        )
+        message = await session.scalar(stmt)
+        await session.commit()
+
+        return cast(MessagesModel, message)

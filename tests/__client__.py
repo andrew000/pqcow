@@ -13,6 +13,8 @@ from websockets import ConnectionClosed, ConnectionClosedError
 
 from pqcow.client import AsyncClient
 from pqcow.key_storage.key_storage import JSONKeyStorage
+from pqcow.pq_types.answer_types import Error
+from pqcow.pq_types.answer_types.resolved_user import ResolvedUser
 
 if TYPE_CHECKING:
     from pqcow.key_storage.base import Key
@@ -35,24 +37,31 @@ def create_dilithium_keypair() -> tuple[bytes, bytes]:
     return public_key, dilithium.export_secret_key()
 
 
-def recv_user_input() -> str:
-    return input("Enter message to send: ")
+def recv_user_input(text: str) -> str:
+    return input(text)
 
 
 async def sender(client: AsyncClient) -> CloseReason:
     try:
         while True:
-            message = await asyncio.to_thread(recv_user_input)
-
-            if message == "/exit":
-                await client.close()
-                return CloseReason.CLIENT_CLOSED
-
+            message = await asyncio.to_thread(recv_user_input, "Enter command: ")
             try:
-                await client.send_message(1, message)
-                # await asyncio.gather(
-                #     *[client.send_message(1, f"Message {i}") for i in range(10_000)]
-                # )
+                match message:
+                    case "/exit":
+                        await client.close()
+                        return CloseReason.CLIENT_CLOSED
+
+                    case "/resolve":
+                        dilithium_public_key_hex = await asyncio.to_thread(
+                            recv_user_input,
+                            "Enter dilithium public key: ",
+                        )
+                        await client.resolve_user(bytes.fromhex(dilithium_public_key_hex))
+
+                    case "/send":
+                        user_id = int(await asyncio.to_thread(recv_user_input, "Enter user id: "))
+                        message = await asyncio.to_thread(recv_user_input, "Enter message: ")
+                        await client.send_message(user_id, message)
 
             except ConnectionClosed as e:
                 logger.info("Connection closed by the server. Reason: %s", e.rcvd.reason)
@@ -129,8 +138,18 @@ async def start_client(
     _task = asyncio.create_task(sender(client))
 
     try:
-        async for answer in client:
-            logger.info("Received answer: %s", answer)
+        async for answer, _event in client:
+            if isinstance(answer, Error):
+                logger.error("Received error: %s", answer)
+                continue
+
+            match answer.answer.data:
+                case ResolvedUser() as resolved_user:
+                    logger.info("Resolved user: ID: %s; %s", resolved_user.id, resolved_user)
+
+                case _:
+                    logger.info("Received answer: %s", answer)
+                    continue
 
     except ConnectionClosedError as e:
         logger.info("Connection closed by the server. Reason: %s", e.rcvd.reason)

@@ -8,6 +8,8 @@ import msgspec.msgpack
 import oqs  # type: ignore[import-untyped]
 
 from pqcow.server import Server
+from pqcow.server.db.base import create_sqlite_session_pool
+from pqcow.server.db.db import ServerDatabase
 
 logging.basicConfig(format="%(asctime)s %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -34,7 +36,7 @@ async def start_server(host: str, port: int) -> None:
         port=port,
         signature=oqs.Signature("Dilithium3", secret_key=loaded_dilithium["private_key"]),
         dilithium_public_key=loaded_dilithium["public_key"],
-        sqlite_path=Path("server.db"),
+        db=ServerDatabase(*(await create_sqlite_session_pool())),
     )
 
     await server.start()

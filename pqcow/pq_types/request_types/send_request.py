@@ -5,8 +5,9 @@ import msgspec
 
 from pqcow.pq_types.request_types import SendMessage
 from pqcow.pq_types.request_types.register_request import RegisterRequest
+from pqcow.pq_types.request_types.resolve_user import ResolveUserByDilithium
 
-REQUEST_TYPES = Union[SendMessage | RegisterRequest]  # noqa: UP007
+REQUEST_TYPES = Union[SendMessage | RegisterRequest | ResolveUserByDilithium]  # noqa: UP007
 
 
 class SendRequest(msgspec.Struct, kw_only=True, tag=True):
