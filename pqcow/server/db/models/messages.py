@@ -17,6 +17,7 @@ class MessagesModel(Base):
         nullable=False,
     )
     sender_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.id"), nullable=False)
+    receiver_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.id"), nullable=False)
     message: Mapped[str] = mapped_column(String, nullable=False)
     signature: Mapped[bytes] = mapped_column(BLOB, nullable=False)
     created_at: Mapped[datetime] = mapped_column(

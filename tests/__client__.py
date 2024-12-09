@@ -2,22 +2,24 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from contextlib import suppress
 from enum import Enum
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 import oqs  # type: ignore[import-untyped]
-from cryptography.fernet import InvalidToken
 from websockets import ConnectionClosed, ConnectionClosedError
 
 from pqcow.client import AsyncClient
-from pqcow.key_storage.key_storage import JSONKeyStorage
+from pqcow.client.db.base import Base, create_sqlite_session_pool
+from pqcow.client.db.db import ClientDatabase
 from pqcow.pq_types.answer_types import Error
+from pqcow.pq_types.answer_types.chat_list_answer import ChatListAnswer
+from pqcow.pq_types.answer_types.message import SendMessageAnswer
+from pqcow.pq_types.answer_types.poll_messages_answer import PollMessagesAnswer
 from pqcow.pq_types.answer_types.resolved_user import ResolvedUser
 
 if TYPE_CHECKING:
-    from pqcow.key_storage.base import Key
+    from pqcow.client.db.models import IdentityModel
+
 
 logging.basicConfig(format="%(asctime)s %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -38,7 +40,7 @@ def create_dilithium_keypair() -> tuple[bytes, bytes]:
 
 
 def recv_user_input(text: str) -> str:
-    return input(text)
+    return input(text).strip()
 
 
 async def sender(client: AsyncClient) -> CloseReason:
@@ -52,16 +54,33 @@ async def sender(client: AsyncClient) -> CloseReason:
                         return CloseReason.CLIENT_CLOSED
 
                     case "/resolve":
-                        dilithium_public_key_hex = await asyncio.to_thread(
+                        dilithium_public_key_hex: str = await asyncio.to_thread(
                             recv_user_input,
                             "Enter dilithium public key: ",
                         )
-                        await client.resolve_user(bytes.fromhex(dilithium_public_key_hex))
+                        try:
+                            await client.resolve_user(
+                                bytes.fromhex(dilithium_public_key_hex.removeprefix("0x")),
+                            )
+                        except ValueError:
+                            logger.exception("Invalid dilithium public key")
+                            continue
 
                     case "/send":
                         user_id = int(await asyncio.to_thread(recv_user_input, "Enter user id: "))
                         message = await asyncio.to_thread(recv_user_input, "Enter message: ")
                         await client.send_message(user_id, message)
+
+                    case "/list":
+                        await client.chat_list()
+
+                    case "/poll":
+                        chat_id = int(await asyncio.to_thread(recv_user_input, "Enter chat id: "))
+                        await client.poll_messages(chat_id)
+
+                    case _:
+                        logger.info("Unknown command: %s", message)
+                        continue
 
             except ConnectionClosed as e:
                 logger.info("Connection closed by the server. Reason: %s", e.rcvd.reason)
@@ -81,46 +100,83 @@ async def sender(client: AsyncClient) -> CloseReason:
 async def start_client(
     host: str,
     port: int,
-    name: str,
-    storage_path: Path,
-    storage_key: str | bytes,
+    user_identity_name: str,
+    server_identity_name: str,
 ) -> CloseReason:
-    storage = JSONKeyStorage(storage_path)
+    db = ClientDatabase(*(await create_sqlite_session_pool()))
+    await db.init_db(base_model=Base)
 
-    with suppress(ValueError):
-        storage.create_storage(storage_key)
+    user_ident: IdentityModel = await db.get_identity(user_identity_name, type_="client")
 
-    try:
-        storage.load_storage(storage_key)
-    except InvalidToken:
-        logger.exception("Invalid storage key")
-        return CloseReason.LOCAL_ERROR
-
-    try:
-        key: Key = storage.get_key(name)
-    except KeyError:
-        logger.info("Identity key for `%s` not found. Would you like to create one?", name)
+    if not user_ident:
+        logger.info(
+            "Identity key for user `%s` not found. Would you like to create one?",
+            user_identity_name,
+        )
         create = input("[Y/n]: ")
 
         if create.casefold() != "y":
             return CloseReason.ERROR
 
-        logger.info("Creating Identity key for `%s`...", name)
+        logger.info("Creating Identity key for user `%s`...", user_identity_name)
 
         public_key, private_key = create_dilithium_keypair()
-        storage.set_key(name=name, public_key=public_key, private_key=private_key)
-        storage.save_storage(storage_key)
-        key = storage.get_key(name)
+        user_ident = await db.new_identity(
+            user_identity_name,
+            type_="client",
+            public_key=public_key,
+            private_key=private_key,
+        )
 
-        logger.info("Identity key for `%s` created and saved", name)
+        logger.info("Identity key for user `%s` created and saved", user_identity_name)
 
-    logger.info("Loaded Identity key for `%s`; %s", name, key.dilithium_public_key.hex())
+    server_ident = await db.get_identity(server_identity_name, type_="server")
+
+    if not server_ident:
+        logger.info(
+            "Identity key for server `%s` not found. Would you like to add one?",
+            server_identity_name,
+        )
+        create = input("[Y/n]: ")
+
+        if create.casefold() != "y":
+            return CloseReason.ERROR
+
+        server_ident_input = input("Enter server dilithium public key in hex: ")
+
+        try:
+            server_ident_bytes = bytes.fromhex(server_ident_input)
+        except ValueError:
+            logger.exception("Invalid dilithium public key")
+            return CloseReason.ERROR
+
+        server_ident = await db.new_identity(
+            server_identity_name,
+            type_="server",
+            public_key=server_ident_bytes,
+        )
+
+        logger.info("Identity key for server `%s` added and saved", server_identity_name)
+
+    logger.info(
+        "Loaded Identity key for user `%s`; %s",
+        user_ident.username,
+        user_ident.dilithium_public_key.hex(),
+    )
+    logger.info(
+        "Loaded Identity key for server `%s`; %s",
+        server_identity_name,
+        server_ident.dilithium_public_key.hex(),
+    )
+
     client = AsyncClient(
         host=host,
         port=port,
-        signature=oqs.Signature("Dilithium3", key.dilithium_private_key),
-        public_key=key.dilithium_public_key,
-        username=name,
+        signature=oqs.Signature("Dilithium3", user_ident.dilithium_private_key),
+        public_key=user_ident.dilithium_public_key,
+        username=user_identity_name,
+        db=db,
+        server_dilithium_public_key=server_ident.dilithium_public_key,
     )
 
     try:
@@ -143,9 +199,61 @@ async def start_client(
                 logger.error("Received error: %s", answer)
                 continue
 
+            if isinstance(answer.answer, Error):
+                logger.error("Received error: %s", answer.answer)
+                continue
+
             match answer.answer.data:
                 case ResolvedUser() as resolved_user:
-                    logger.info("Resolved user: ID: %s; %s", resolved_user.id, resolved_user)
+                    logger.info(
+                        "Resolved user: ID: %s; %s",
+                        resolved_user.id,
+                        resolved_user,
+                    )
+
+                    async with client.db.sessionmaker() as session:
+                        await client.db.new_user(
+                            session=session,
+                            user_id=resolved_user.id,
+                            username=resolved_user.username,
+                            dilithium_public_key=resolved_user.dilithium_public_key,
+                        )
+
+                case ChatListAnswer() as chat_list:
+                    logger.info("Chat list: %s", chat_list)
+
+                    async with client.db.sessionmaker() as session:
+                        await client.db.batch_insert_chats(
+                            session=session,
+                            chat_list=chat_list,
+                        )
+
+                case PollMessagesAnswer() as poll_messages:
+                    if not poll_messages.messages:
+                        continue
+
+                    logger.info("Poll messages: %s", poll_messages)
+
+                    async with client.db.sessionmaker() as session:
+                        await client.db.batch_insert_messages(
+                            session=session,
+                            messages=poll_messages.messages,
+                        )
+
+                case SendMessageAnswer() as message_sent:
+                    logger.info("Message sent: %s", message_sent)
+
+                    async with client.db.sessionmaker() as session:
+                        await client.db.new_message_in_chat(
+                            session=session,
+                            message_id=message_sent.message.message_id,
+                            chat_id=message_sent.message.chat_id,
+                            sender_id=message_sent.message.sender_id,
+                            receiver_id=message_sent.message.receiver_id,
+                            message=message_sent.message.text,
+                            signature=message_sent.message.sign,
+                            created_at=message_sent.message.created_at,
+                        )
 
                 case _:
                     logger.info("Received answer: %s", answer)
@@ -166,9 +274,8 @@ if __name__ == "__main__":
             start_client(
                 "127.0.0.1",
                 8080,
-                name="Andrew",
-                storage_path=Path("storage.enc"),
-                storage_key=input("Enter storage key: "),
+                user_identity_name="Andrew",
+                server_identity_name="master",
             ),
         )
 

@@ -5,6 +5,6 @@ class SignatureVerificationError(Exception):
 
 
 class ChatNotFoundError(Exception):
-    def __init__(self, chat_id: int) -> None:
-        super().__init__(f"Chat with id {chat_id} not found")
-        self.chat_id: int = chat_id
+    def __init__(self, user_id: int) -> None:
+        super().__init__(f"Chat with user_id {user_id} not found")
+        self.user_id: int = user_id

@@ -8,4 +8,7 @@ __pycache__
 /.idea
 storage.enc
 liboqs-python/
-/server.db
+/tokei.exe
+/textual.log
+/pqcow-server.db
+/pqcow-client.db

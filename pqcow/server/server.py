@@ -12,11 +12,15 @@ from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from oqs import KeyEncapsulation, Signature  # type: ignore[import-untyped]
 from websockets import ConnectionClosed, serve
 
-from pqcow.func import pre_process_incom_data, prepare_data_to_send
+from pqcow.pq_func import pre_process_incom_data, prepare_data_to_send
 from pqcow.pq_types.answer_types import OK, Answer, Error, Handshake
+from pqcow.pq_types.answer_types.chat_list_answer import Chat, ChatListAnswer
+from pqcow.pq_types.answer_types.message import Message, SendMessageAnswer
+from pqcow.pq_types.answer_types.poll_messages_answer import PollMessagesAnswer
 from pqcow.pq_types.answer_types.resolved_user import ResolvedUser
 from pqcow.pq_types.request_types import SendHandshake, SendMessage, SendRequest
-from pqcow.pq_types.request_types.chat_list_main import ChatListMain
+from pqcow.pq_types.request_types.chat_list import ChatList
+from pqcow.pq_types.request_types.poll_messages import PollMessages
 from pqcow.pq_types.request_types.register_request import RegisterRequest
 from pqcow.pq_types.request_types.resolve_user import ResolveUserByDilithium
 from pqcow.pq_types.signed_data import SignedData
@@ -71,6 +75,15 @@ async def do_handshake(
     is_ok = signature.verify(
         message=signed_data.data,
         signature=signed_data.sign,
+        public_key=send_handshake.dilithium_public_key,
+    )
+
+    if not is_ok:
+        raise SignatureVerificationError(dilithium_public_key=send_handshake.dilithium_public_key)
+
+    is_ok = signature.verify(
+        message=send_handshake.encapsulated_secret,
+        signature=send_handshake.sign,
         public_key=send_handshake.dilithium_public_key,
     )
 
@@ -158,7 +171,7 @@ class Server:
 
             if isinstance(client_data, UnregisteredClientData):
                 logger.info(
-                    "%s User not found. Waiting for registration",
+                    "%s User not found. Waiting for registration request",
                     connection.remote_address,
                 )
                 client_data: ClientData | Literal[False] = await self._registration(
@@ -182,7 +195,43 @@ class Server:
                 )
 
                 match send_request.request:
-                    case SendMessage(user_id=user_id, text=text):
+                    case PollMessages(chat_id=chat_id, last_message_id=last_message_id):
+                        logger.info("%s Received PollMessages", connection.remote_address)
+
+                        poll_messages_answer = await self.poll_messages(
+                            user_id=cast(ClientData, client_data).user_id,
+                            chat_id=chat_id,
+                            last_message_id=last_message_id,
+                        )
+
+                        data_to_send = prepare_data_to_send(
+                            shared_secret=client_data.shared_secret,
+                            sign=self.signature,
+                            data=Answer(
+                                event_id=send_request.event_id,
+                                answer=OK(data=poll_messages_answer),
+                            ),
+                        )
+                        await connection.send(data_to_send)
+
+                    case ChatList():
+                        logger.info("%s Received ChatList", connection.remote_address)
+
+                        chat_list_answer = await self.chat_list(
+                            user_id=cast(ClientData, client_data).user_id,
+                        )
+
+                        data_to_send = prepare_data_to_send(
+                            shared_secret=client_data.shared_secret,
+                            sign=self.signature,
+                            data=Answer(
+                                event_id=send_request.event_id,
+                                answer=OK(data=chat_list_answer),
+                            ),
+                        )
+                        await connection.send(data_to_send)
+
+                    case SendMessage(user_id=user_id, sign=sign, text=text):
                         logger.info(
                             "%s Received SendMessage(user_id=%s, text=%s)",
                             connection.remote_address,
@@ -191,11 +240,11 @@ class Server:
                         )
 
                         try:
-                            await self.send_message(
-                                chat_id=1,
+                            message_model = await self.send_message(
                                 sender_id=cast(ClientData, client_data).user_id,
                                 receiver_id=user_id,
                                 message=text,
+                                signature=sign,
                             )
                         except ChatNotFoundError:
                             data_to_send = prepare_data_to_send(
@@ -212,7 +261,22 @@ class Server:
                         data_to_send = prepare_data_to_send(
                             shared_secret=client_data.shared_secret,
                             sign=self.signature,
-                            data=Answer(event_id=send_request.event_id, answer=OK(data=None)),
+                            data=Answer(
+                                event_id=send_request.event_id,
+                                answer=OK(
+                                    data=SendMessageAnswer(
+                                        message=Message(
+                                            message_id=message_model.message_id,
+                                            chat_id=message_model.chat_id,
+                                            sender_id=message_model.sender_id,
+                                            receiver_id=message_model.receiver_id,
+                                            text=message_model.message,
+                                            sign=message_model.signature,
+                                            created_at=message_model.created_at,
+                                        ),
+                                    ),
+                                ),
+                            ),
                         )
                         await connection.send(data_to_send)
 
@@ -268,18 +332,6 @@ class Server:
                         )
 
                         await connection.send(data)
-
-                    case ChatListMain():
-                        logger.info("%s Received ChatListMain", connection.remote_address)
-
-                        # self.db.chat_list_main(user_id=client_data.user_id)
-                        #
-                        # data_to_send = prepare_data_to_send(
-                        #     shared_secret=client_data.shared_secret,
-                        #     data=msgspec.msgpack.encode(Answer(event_id=send_request.event_id,
-                        #     answer=OK())),
-                        # )
-                        # await connection.send(data_to_send)
 
         except ConnectionClosed:
             logger.info("%s Connection closed by the client", connection.remote_address)
@@ -378,19 +430,18 @@ class Server:
 
     async def send_message(
         self,
-        chat_id: int,
         sender_id: int,
         receiver_id: int,
         message: str,
+        signature: bytes,
     ) -> MessagesModel:
         async with self.db.sessionmaker() as session:
             return await self.db.send_message(
                 session=session,
-                chat_id=chat_id,
                 sender_id=sender_id,
                 receiver_id=receiver_id,
                 text=message,
-                signature=self.signature.sign(message.encode("utf-8")),
+                signature=signature,
             )
 
     async def resolve_user_by_dilithium(
@@ -404,6 +455,51 @@ class Server:
                 initiator_id=initiator_id,
                 dilithium_public_key=dilithium_public_key,
             )
+
+    async def chat_list(self, user_id: int) -> ChatListAnswer:
+        async with self.db.sessionmaker() as session:
+            chat_models = await self.db.chat_list(session=session, user_id=user_id)
+
+            chats = [
+                Chat(
+                    id=chat.id,
+                    user_id=chat.user_id,
+                    chat_with_user_id=chat.chat_with_user_id,
+                    created_at=chat.created_at,
+                )
+                for chat in chat_models
+            ]
+
+            return ChatListAnswer(chats=chats)
+
+    async def poll_messages(
+        self,
+        user_id: int,
+        chat_id: int,
+        last_message_id: int,
+    ) -> PollMessagesAnswer:
+        async with self.db.sessionmaker() as session:
+            messages_models = await self.db.poll_messages(
+                session=session,
+                user_id=user_id,
+                chat_id=chat_id,
+                last_message_id=last_message_id,
+            )
+
+            messages = [
+                Message(
+                    message_id=message.message_id,
+                    chat_id=message.chat_id,
+                    sender_id=message.sender_id,
+                    receiver_id=message.receiver_id,
+                    text=message.message,
+                    sign=message.signature,
+                    created_at=message.created_at,
+                )
+                for message in messages_models
+            ]
+
+            return PollMessagesAnswer(chat_id=chat_id, messages=messages)
 
 
 def create_hkdf() -> HKDF:

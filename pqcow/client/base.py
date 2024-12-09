@@ -31,7 +31,16 @@ class BaseSyncClient(metaclass=ABCMeta):
 
 class BaseAsyncClient(metaclass=ABCMeta):
     @abstractmethod
-    def __init__(self, host: str, port: int, signature: Signature, username: str) -> None: ...
+    def __init__(
+        self,
+        host: str,
+        port: int,
+        signature: Signature,
+        public_key: bytes,
+        username: str,
+        server_dilithium_public_key: bytes | None = None,
+        force_retrieve_server_public_key: bool = False,
+    ) -> None: ...
 
     @abstractmethod
     async def connect(self) -> None: ...
@@ -43,7 +52,19 @@ class BaseAsyncClient(metaclass=ABCMeta):
     async def do_handshake(self, signature: Signature) -> None: ...
 
     @abstractmethod
-    async def send_request(self, request: REQUEST_TYPES) -> None: ...
+    async def __call__(self, request: REQUEST_TYPES) -> None: ...
+
+    @abstractmethod
+    async def register(self) -> None: ...
+
+    @abstractmethod
+    async def resolve_user(self, dilithium_public_key: bytes) -> None: ...
 
     @abstractmethod
     async def send_message(self, user_id: int, text: str) -> None: ...
+
+    @abstractmethod
+    async def chat_list(self) -> None: ...
+
+    @abstractmethod
+    async def poll_messages(self, chat_id: int) -> None: ...

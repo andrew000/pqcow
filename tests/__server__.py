@@ -29,7 +29,15 @@ async def start_server(host: str, port: int) -> None:
             ),
         )
 
-    loaded_dilithium: dict[str, bytes] = msgspec.msgpack.decode(dilithium_path.read_bytes())
+    loaded_dilithium: dict[str, bytes] = msgspec.msgpack.decode(
+        dilithium_path.read_bytes(),
+        type=dict[str, bytes],
+    )
+
+    logger.info(
+        "Loaded dilithium keypair. Share this public key with clients: %s",
+        loaded_dilithium["public_key"].hex(),
+    )
 
     server = Server(
         host=host,

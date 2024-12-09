@@ -1,4 +1,4 @@
-from os import environ
+from typing import Final
 
 from sqlalchemy import URL
 from sqlalchemy.ext.asyncio import (
@@ -8,6 +8,8 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 from sqlalchemy.orm import DeclarativeBase
+
+DATABASE_NAME: Final[str] = "pqcow-client.db"
 
 
 class Base(DeclarativeBase):
@@ -25,9 +27,8 @@ async def create_sqlite_session_pool() -> tuple[AsyncEngine, async_sessionmaker[
     engine: AsyncEngine = create_async_engine(
         url=URL.create(
             drivername="sqlite+aiosqlite",
-            database=environ.get("DB_NAME", "pqcow-server.db"),
+            database=DATABASE_NAME,
         ),
-        echo=bool(int(environ.get("DEV", 0))),
     )
 
     return engine, async_sessionmaker(engine, expire_on_commit=False)

@@ -15,9 +15,12 @@ from websockets import ConnectionClosed, connect
 from websockets.asyncio.client import ClientConnection
 
 from pqcow.client.base import BaseAsyncClient
-from pqcow.func import pre_process_incom_data, prepare_data_to_send
+from pqcow.client.db.base import Base
+from pqcow.pq_func import pre_process_incom_data, prepare_data_to_send
 from pqcow.pq_types.answer_types import Answer, Handshake
 from pqcow.pq_types.request_types import REQUEST_TYPES, SendHandshake, SendMessage, SendRequest
+from pqcow.pq_types.request_types.chat_list import ChatList
+from pqcow.pq_types.request_types.poll_messages import PollMessages
 from pqcow.pq_types.request_types.register_request import RegisterRequest
 from pqcow.pq_types.request_types.resolve_user import ResolveUserByDilithium
 from pqcow.pq_types.signed_data import SignedData
@@ -26,6 +29,10 @@ from pqcow.server.exceptions import SignatureVerificationError
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
     from uuid import UUID
+
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+    from pqcow.client.db.db import ClientDatabase
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -39,6 +46,9 @@ class AsyncClient(BaseAsyncClient):
         signature: Signature,
         public_key: bytes,
         username: str,
+        db: ClientDatabase[async_sessionmaker[AsyncSession]],
+        server_dilithium_public_key: bytes | None = None,
+        force_retrieve_server_public_key: bool = False,
     ) -> None:
         """
         Initialize the Client Instance.
@@ -49,20 +59,35 @@ class AsyncClient(BaseAsyncClient):
         :type port: int
         :param signature: The signature of client.
         :type signature: Signature
+        :param public_key: The public key of client.
+        :type public_key: bytes
+        :param username: The username of client.
+        :type username: str
+        :param db: The database instance.
+        :type db: ClientDatabase[async_sessionmaker[AsyncSession]]
+        :param server_dilithium_public_key: The public key of server.
+        :type server_dilithium_public_key: bytes | None
+        :param force_retrieve_server_public_key: If True, the client will retrieve the server
+        public key.
+        :type force_retrieve_server_public_key: bool
         """
         self.address = host
         self.port = port
         self.signature = signature
         self.public_key = public_key
         self.username = username
+        self.db = db
+        self.server_dilithium_public_key: bytes | None = server_dilithium_public_key
+        self.force_retrieve_server_public_key = force_retrieve_server_public_key
         self.user_id: int | None = None
         self.events: dict[UUID, msgspec.Struct] = {}
         self.lock = asyncio.Lock()
         self.connection: ClientConnection | None = None
-        self.server_dilithium_public_key: bytes | None = None
         self.shared_secret: AESGCM | None = None
 
     async def connect(self) -> None:
+        await self.db.init_db(base_model=Base)
+
         self.connection = await connect(
             uri=urlunparse(("ws", f"{self.address}:{self.port}", "", "", "", "")),
             compression=None,
@@ -77,6 +102,8 @@ class AsyncClient(BaseAsyncClient):
         await self.connection.close()
         await self.connection.wait_closed()
 
+        await self.db.close()
+
     async def do_handshake(self, signature: Signature) -> None:
         signed_data = msgspec.msgpack.decode(
             cast(bytes, await cast(ClientConnection, self.connection).recv(decode=False)),
@@ -84,17 +111,22 @@ class AsyncClient(BaseAsyncClient):
         )
         handshake: Handshake = msgspec.msgpack.decode(signed_data.data, type=Handshake)
 
+        if handshake.dilithium_public_key != self.server_dilithium_public_key:
+            if self.force_retrieve_server_public_key:
+                self.server_dilithium_public_key = handshake.dilithium_public_key
+            else:
+                msg = "Server public key does not match the one provided"
+                raise RuntimeError(msg)
+
         is_ok = signature.verify(
             message=signed_data.data,
             signature=signed_data.sign,
-            public_key=handshake.dilithium_public_key,
+            public_key=self.server_dilithium_public_key,
         )
 
         if not is_ok:
             msg = "Handshake failed"
             raise RuntimeError(msg)
-
-        self.server_dilithium_public_key = handshake.dilithium_public_key
 
         client_kem = KeyEncapsulation("Kyber512")
         encapsulated_secret, shared_secret = client_kem.encap_secret(handshake.kyber_public_key)
@@ -186,7 +218,7 @@ class AsyncClient(BaseAsyncClient):
 
         return True
 
-    async def send_request(self, request: REQUEST_TYPES) -> None:
+    async def __call__(self, request: REQUEST_TYPES) -> None:
         if not self.connection:
             msg = "Client is not connected"
             raise RuntimeError(msg)
@@ -208,15 +240,30 @@ class AsyncClient(BaseAsyncClient):
             await self.connection.send(data_to_send)
 
     async def register(self) -> None:
-        await self.send_request(RegisterRequest(username=self.username))
+        await self(RegisterRequest(username=self.username))
 
     async def resolve_user(self, dilithium_public_key: bytes) -> None:
-        await self.send_request(ResolveUserByDilithium(dilithium_public_key=dilithium_public_key))
+        await self(ResolveUserByDilithium(dilithium_public_key=dilithium_public_key))
 
     async def send_message(self, user_id: int, text: str) -> None:
-        await self.send_request(
+        await self(
             SendMessage(user_id=user_id, sign=self.signature.sign(text.encode()), text=text),
         )
+
+    async def chat_list(self) -> None:
+        await self(ChatList())
+
+    async def poll_messages(self, chat_id: int) -> None:
+        async with self.db.sessionmaker() as session:
+            messages = await self.db.get_messages_by_chat_id(
+                session=session,
+                chat_id=chat_id,
+                limit=1,
+            )
+
+            last_message_id = 0 if not messages else messages[-1].message_id
+
+        await self(PollMessages(chat_id=chat_id, last_message_id=last_message_id))
 
 
 def create_hkdf() -> HKDF:

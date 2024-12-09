@@ -1,0 +1,63 @@
+#app-grid {
+    layout: grid;
+    grid-size: 2;
+    grid-columns: 25% 75%;
+}
+
+#chat-list > Static {
+    background: $boost;
+    color: auto;
+    margin-bottom: 1;
+    padding: 1;
+}
+
+#chat-list {
+    background: $panel;
+    border: dodgerblue;
+}
+
+.chat-item {
+    background: $panel;
+    border: darkorange;
+    height: auto;
+
+    &:focus {
+        background: $boost;
+        border: lightgreen;
+        text-style: bold reverse;
+    }
+
+    &:hover {
+        background: $boost;
+        color: $text;
+    }
+}
+
+#right-panel {
+    layout: grid;
+    grid-size: 1;
+    grid-rows: 90% 10%;
+    background: $panel;
+    border: darkorange;
+}
+
+#messages-list {
+    layout: vertical;
+    grid-size: 1;
+    background: $panel;
+    border: darkorange;
+}
+
+#message-input {
+    background: $panel;
+    border: darkorange;
+}
+
+.my-message {
+    background: $panel;
+    color: lightgreen;
+}
+
+.other-message {
+    background: $panel;
+}

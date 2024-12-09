@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, cast
+from typing import Any, cast
 
-from sqlalchemy import select
+from sqlalchemy import ScalarResult, or_, select
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
@@ -10,10 +10,6 @@ from pqcow.server.db.models.chats import ChatModel
 from pqcow.server.db.models.messages import MessagesModel
 from pqcow.server.db.models.users import UserModel
 from pqcow.server.exceptions import ChatNotFoundError
-
-if TYPE_CHECKING:
-    from collections.abc import Iterable
-    from sqlite3 import Row
 
 
 class ServerDatabase[T: async_sessionmaker[AsyncSession]]:
@@ -98,23 +94,25 @@ class ServerDatabase[T: async_sessionmaker[AsyncSession]]:
         return user
 
     @staticmethod
-    async def chat_list_main(
+    async def chat_list(
         session: AsyncSession,
         user_id: int,
         limit: int = 100,
         offset: int = 0,
-    ) -> Iterable[Row]: ...
+    ) -> ScalarResult[ChatModel]:
+        stmt = select(ChatModel).filter(ChatModel.user_id == user_id).limit(limit).offset(offset)
+
+        return await session.scalars(stmt)
 
     @staticmethod
     async def send_message(
         session: AsyncSession,
-        chat_id: int,
         sender_id: int,
         receiver_id: int,
         text: str,
         signature: bytes,
     ) -> MessagesModel:
-        # Select chat
+        # Check if chat exists
         stmt = select(ChatModel).filter(
             ChatModel.user_id == sender_id,
             ChatModel.chat_with_user_id == receiver_id,
@@ -122,14 +120,15 @@ class ServerDatabase[T: async_sessionmaker[AsyncSession]]:
         chat = await session.scalar(stmt)
 
         if not chat:
-            raise ChatNotFoundError(chat_id=chat_id)
+            raise ChatNotFoundError(user_id=receiver_id)
 
         # Insert message
         stmt = (
             insert(MessagesModel)
             .values(
-                chat_id=chat_id,
+                chat_id=chat.id,
                 sender_id=sender_id,
+                receiver_id=receiver_id,
                 message=text,
                 signature=signature,
             )
@@ -139,3 +138,25 @@ class ServerDatabase[T: async_sessionmaker[AsyncSession]]:
         await session.commit()
 
         return cast(MessagesModel, message)
+
+    @staticmethod
+    async def poll_messages(
+        session: AsyncSession,
+        user_id: int,
+        chat_id: int,
+        last_message_id: int,
+    ) -> ScalarResult[MessagesModel]:
+        stmt = (
+            select(MessagesModel)
+            .filter(
+                MessagesModel.chat_id == chat_id,
+                or_(MessagesModel.sender_id == user_id, MessagesModel.receiver_id == user_id),
+            )
+            .order_by(MessagesModel.message_id)
+            .limit(100)
+        )
+
+        if last_message_id:
+            stmt = stmt.filter(MessagesModel.message_id > last_message_id)
+
+        return await session.scalars(stmt)
