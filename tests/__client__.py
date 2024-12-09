@@ -104,6 +104,14 @@ async def sender(client: AsyncClient) -> CloseReason:
                 logger.info("Connection closed by the server. Reason: %s", e.rcvd.reason)
                 return CloseReason.SERVER_CLOSED
 
+            except ValueError:
+                logger.exception("Invalid input")
+                continue
+
+            except Exception as e:
+                logger.exception("An error occurred while processing command: %s", e.args)
+                return CloseReason.LOCAL_ERROR
+
             await asyncio.sleep(0.1)
 
     except asyncio.CancelledError:
@@ -117,16 +125,21 @@ async def sender(client: AsyncClient) -> CloseReason:
 
 async def chat_polling(client: AsyncClient) -> None:
     while True:
-        async with client.db.sessionmaker() as session:
-            chat_ids = await client.db.get_chat_ids(session=session)
+        try:
+            async with client.db.sessionmaker() as session:
+                chat_ids = await client.db.get_chat_ids(session=session)
 
-            for chat_id in chat_ids:
-                try:
-                    await client.poll_messages(chat_id)
-                except Exception as e:
-                    logger.exception("An error occurred while polling messages: %s", e.args)
-                finally:
-                    await asyncio.sleep(1)
+                for chat_id in chat_ids:
+                    try:
+                        await client.poll_messages(chat_id)
+                    except Exception as e:
+                        logger.exception("An error occurred while polling messages: %s", e.args)
+                    finally:
+                        await asyncio.sleep(1)
+
+        except asyncio.CancelledError:
+            logger.info("Polling task was cancelled")
+            break
 
 
 async def start_client(

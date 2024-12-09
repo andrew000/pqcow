@@ -168,6 +168,9 @@ class AsyncClient(BaseAsyncClient):
                         self.connection.close_reason,
                     )
                     break
+                except asyncio.CancelledError:
+                    logger.info("Connection closed by the client")
+                    break
                 except Exception as e:
                     logger.exception("An error occurred while receiving message: %s", e.args)
                     continue
