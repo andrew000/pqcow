@@ -26,7 +26,11 @@ from pqcow.pq_types.request_types.resolve_user import ResolveUserByDilithium
 from pqcow.pq_types.signed_data import SignedData
 from pqcow.server.client_data import ClientData, UnregisteredClientData
 from pqcow.server.db.base import init_db
-from pqcow.server.exceptions import ChatNotFoundError, SignatureVerificationError
+from pqcow.server.exceptions import (
+    SignatureVerificationError,
+    UserAlreadyExistsError,
+    UserNotFoundError,
+)
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -103,11 +107,22 @@ async def do_handshake(
         )
 
     if not user:
+        logger.info(
+            "%s User %s not found. Waiting for registration request",
+            connection.remote_address,
+            send_handshake.dilithium_public_key.hex()[:32],
+        )
         return UnregisteredClientData(
             dilithium_public_key=send_handshake.dilithium_public_key,
             shared_secret=shared_secret,
         )
 
+    logger.info(
+        "%s User found. User ID: %s, Username: %s",
+        connection.remote_address,
+        user.id,
+        user.username,
+    )
     return ClientData(
         user_id=user.id,
         username=user.username,
@@ -246,13 +261,13 @@ class Server:
                                 message=text,
                                 signature=sign,
                             )
-                        except ChatNotFoundError:
+                        except UserNotFoundError:
                             data_to_send = prepare_data_to_send(
                                 shared_secret=cast(ClientData, client_data).shared_secret,
                                 sign=self.signature,
                                 data=Answer(
                                     event_id=send_request.event_id,
-                                    answer=Error(code=2, message="Chat not found"),
+                                    answer=Error(code=2, message="User not found"),
                                 ),
                             )
                             await connection.send(data_to_send)
@@ -414,12 +429,21 @@ class Server:
             await connection.close(reason="Invalid data received. Register wanted")
             return False
 
-        async with self.db.sessionmaker() as session:
-            user = await self.db.register_user(
-                session=session,
-                username=send_request.request.username,
-                dilithium_public_key=client_data.dilithium_public_key,
+        try:
+            async with self.db.sessionmaker() as session:
+                user = await self.db.register_user(
+                    session=session,
+                    username=send_request.request.username,
+                    dilithium_public_key=client_data.dilithium_public_key,
+                )
+        except UserAlreadyExistsError as e:
+            logger.exception(
+                "%s User already exists. Username: %s",
+                connection.remote_address,
+                e.username,
             )
+            await connection.close(reason="User already exists")
+            return False
 
         return ClientData(
             user_id=user.id,

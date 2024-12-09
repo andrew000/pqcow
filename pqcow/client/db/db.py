@@ -163,6 +163,11 @@ class ClientDatabase[T: async_sessionmaker[AsyncSession]]:
         return await session.scalar(stmt)
 
     @staticmethod
+    async def get_chat_ids(session: AsyncSession) -> list[int]:
+        stmt = select(KnownChatModel.id)
+        return list(await session.scalars(stmt))
+
+    @staticmethod
     async def new_message_in_chat(
         session: AsyncSession,
         message_id: int,

@@ -2,14 +2,14 @@ from __future__ import annotations
 
 from typing import Any, cast
 
-from sqlalchemy import ScalarResult, or_, select
+from sqlalchemy import ScalarResult, and_, or_, select
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from pqcow.server.db.models.chats import ChatModel
 from pqcow.server.db.models.messages import MessagesModel
 from pqcow.server.db.models.users import UserModel
-from pqcow.server.exceptions import ChatNotFoundError
+from pqcow.server.exceptions import UserAlreadyExistsError, UserNotFoundError
 
 
 class ServerDatabase[T: async_sessionmaker[AsyncSession]]:
@@ -46,13 +46,14 @@ class ServerDatabase[T: async_sessionmaker[AsyncSession]]:
                     username=username,
                     dilithium_public_key=dilithium_public_key,
                 )
-                # .on_conflict_do_nothing(index_elements=["dilithium_public_key"])
                 .returning(UserModel)
             )
             user = await session.scalar(stmt)
             await session.commit()
 
-        return cast(UserModel, user)
+            return cast(UserModel, user)
+
+        raise UserAlreadyExistsError(username=username)
 
     @staticmethod
     async def resolve_user_by_dilithium(
@@ -69,27 +70,23 @@ class ServerDatabase[T: async_sessionmaker[AsyncSession]]:
         user = await session.scalar(stmt)
 
         if initiator_id is not None and user:
-            stmt = (
-                insert(ChatModel)
-                .values(
-                    user_id=initiator_id,
-                    chat_with_user_id=user.id,
-                )
-                .on_conflict_do_nothing(index_elements=["user_id", "chat_with_user_id"])
+            stmt = select(ChatModel).filter(
+                or_(ChatModel.user_id == initiator_id, ChatModel.chat_with_user_id == user.id),
+                or_(ChatModel.user_id == user.id, ChatModel.chat_with_user_id == initiator_id),
             )
-            await session.execute(stmt)
+            chat = await session.scalar(stmt)
 
-            stmt = (
-                insert(ChatModel)
-                .values(
-                    user_id=user.id,
-                    chat_with_user_id=initiator_id,
+            if not chat:
+                stmt = (
+                    insert(ChatModel)
+                    .values(
+                        user_id=initiator_id,
+                        chat_with_user_id=user.id,
+                    )
+                    .on_conflict_do_nothing(index_elements=["user_id", "chat_with_user_id"])
                 )
-                .on_conflict_do_nothing(index_elements=["user_id", "chat_with_user_id"])
-            )
-            await session.execute(stmt)
-
-            await session.commit()
+                await session.execute(stmt)
+                await session.commit()
 
         return user
 
@@ -100,7 +97,14 @@ class ServerDatabase[T: async_sessionmaker[AsyncSession]]:
         limit: int = 100,
         offset: int = 0,
     ) -> ScalarResult[ChatModel]:
-        stmt = select(ChatModel).filter(ChatModel.user_id == user_id).limit(limit).offset(offset)
+        stmt = (
+            select(ChatModel)
+            .filter(
+                or_(ChatModel.user_id == user_id, ChatModel.chat_with_user_id == user_id),
+            )
+            .limit(limit)
+            .offset(offset)
+        )
 
         return await session.scalars(stmt)
 
@@ -114,13 +118,15 @@ class ServerDatabase[T: async_sessionmaker[AsyncSession]]:
     ) -> MessagesModel:
         # Check if chat exists
         stmt = select(ChatModel).filter(
-            ChatModel.user_id == sender_id,
-            ChatModel.chat_with_user_id == receiver_id,
+            or_(
+                and_(ChatModel.user_id == sender_id, ChatModel.chat_with_user_id == receiver_id),
+                and_(ChatModel.user_id == receiver_id, ChatModel.chat_with_user_id == sender_id),
+            ),
         )
         chat = await session.scalar(stmt)
 
         if not chat:
-            raise ChatNotFoundError(user_id=receiver_id)
+            raise UserNotFoundError(user_id=receiver_id)
 
         # Insert message
         stmt = (

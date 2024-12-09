@@ -7,16 +7,14 @@ dependencies = [
     "pqcow-liboqs==0.10.1.dev0",
     "cryptography==44.0.0",
     "websockets==14.1",
+    "aiosqlite==0.20.0",
+    "sqlalchemy==2.0.36",
 ]
 
 [tool.uv]
 package = true
 
 [project.optional-dependencies]
-server = [
-    "aiosqlite==0.20.0",
-    "sqlalchemy==2.0.36",
-]
 client = [
     "textual==0.89.1"
 ]

@@ -49,9 +49,27 @@ async def sender(client: AsyncClient) -> CloseReason:
             message = await asyncio.to_thread(recv_user_input, "Enter command: ")
             try:
                 match message:
+                    case "/help":
+                        logger.info(
+                            "/help - show this help message\n"
+                            "/exit - exit client\n"
+                            "/resolve - resolve user by dilithium public key\n"
+                            "/send - send message to user\n"
+                            "/list - list all chats\n"
+                            "/poll - poll messages from chat\n",
+                        )
+
                     case "/exit":
                         await client.close()
                         return CloseReason.CLIENT_CLOSED
+
+                    case "/me":
+                        logger.info(
+                            "ID: %s, User: %s, identity: %s",
+                            client.user_id,
+                            client.username,
+                            client.public_key.hex(),
+                        )
 
                     case "/resolve":
                         dilithium_public_key_hex: str = await asyncio.to_thread(
@@ -97,12 +115,26 @@ async def sender(client: AsyncClient) -> CloseReason:
         return CloseReason.ERROR
 
 
+async def chat_polling(client: AsyncClient) -> None:
+    while True:
+        async with client.db.sessionmaker() as session:
+            chat_ids = await client.db.get_chat_ids(session=session)
+
+            for chat_id in chat_ids:
+                try:
+                    await client.poll_messages(chat_id)
+                except Exception as e:
+                    logger.exception("An error occurred while polling messages: %s", e.args)
+                finally:
+                    await asyncio.sleep(1)
+
+
 async def start_client(
     host: str,
     port: int,
     user_identity_name: str,
     server_identity_name: str,
-) -> CloseReason:
+) -> tuple[CloseReason, None]:
     db = ClientDatabase(*(await create_sqlite_session_pool()))
     await db.init_db(base_model=Base)
 
@@ -116,7 +148,7 @@ async def start_client(
         create = input("[Y/n]: ")
 
         if create.casefold() != "y":
-            return CloseReason.ERROR
+            return CloseReason.ERROR, None
 
         logger.info("Creating Identity key for user `%s`...", user_identity_name)
 
@@ -140,7 +172,7 @@ async def start_client(
         create = input("[Y/n]: ")
 
         if create.casefold() != "y":
-            return CloseReason.ERROR
+            return CloseReason.ERROR, None
 
         server_ident_input = input("Enter server dilithium public key in hex: ")
 
@@ -148,7 +180,7 @@ async def start_client(
             server_ident_bytes = bytes.fromhex(server_ident_input)
         except ValueError:
             logger.exception("Invalid dilithium public key")
-            return CloseReason.ERROR
+            return CloseReason.ERROR, None
 
         server_ident = await db.new_identity(
             server_identity_name,
@@ -161,12 +193,12 @@ async def start_client(
     logger.info(
         "Loaded Identity key for user `%s`; %s",
         user_ident.username,
-        user_ident.dilithium_public_key.hex(),
+        user_ident.dilithium_public_key.hex()[:32],
     )
     logger.info(
         "Loaded Identity key for server `%s`; %s",
         server_identity_name,
-        server_ident.dilithium_public_key.hex(),
+        server_ident.dilithium_public_key.hex()[:32],
     )
 
     client = AsyncClient(
@@ -183,15 +215,16 @@ async def start_client(
         await client.connect()
     except ConnectionRefusedError:
         logger.info("Could not connect to server at %s:%s", host, port)
-        return CloseReason.ERROR
+        return CloseReason.ERROR, None
 
     try:
         await client.register()
     except Exception as e:
         logger.exception("An error occurred while registering: %s", type(e).mro())
-        return CloseReason.ERROR
+        return CloseReason.ERROR, None
 
-    _task = asyncio.create_task(sender(client))
+    _sender_task = asyncio.create_task(sender(client))
+    _polling_task = asyncio.create_task(chat_polling(client))
 
     try:
         async for answer, _event in client:
@@ -232,17 +265,21 @@ async def start_client(
                     if not poll_messages.messages:
                         continue
 
-                    logger.info("Poll messages: %s", poll_messages)
-
                     async with client.db.sessionmaker() as session:
                         await client.db.batch_insert_messages(
                             session=session,
                             messages=poll_messages.messages,
                         )
 
-                case SendMessageAnswer() as message_sent:
-                    logger.info("Message sent: %s", message_sent)
+                    logger.info(
+                        "Poll messages: %s",
+                        [
+                            f"{message.sender_id} -> {message.receiver_id}: {message.text}"
+                            for message in poll_messages.messages
+                        ],
+                    )
 
+                case SendMessageAnswer() as message_sent:
                     async with client.db.sessionmaker() as session:
                         await client.db.new_message_in_chat(
                             session=session,
@@ -255,6 +292,13 @@ async def start_client(
                             created_at=message_sent.message.created_at,
                         )
 
+                    logger.info(
+                        "Message sent: [%s -> %s]: %s",
+                        message_sent.message.sender_id,
+                        message_sent.message.receiver_id,
+                        message_sent.message.text,
+                    )
+
                 case _:
                     logger.info("Received answer: %s", answer)
                     continue
@@ -263,14 +307,15 @@ async def start_client(
         logger.info("Connection closed by the server. Reason: %s", e.rcvd.reason)
 
     finally:
-        _task.cancel()
+        _sender_task.cancel()
+        _polling_task.cancel()
 
-    return await _task
+    return await _sender_task, await _polling_task
 
 
 if __name__ == "__main__":
     while True:
-        close_reason = asyncio.run(
+        close_reason, _ = asyncio.run(
             start_client(
                 "127.0.0.1",
                 8080,
