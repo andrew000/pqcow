@@ -1,0 +1,46 @@
+name: Publish to PyPI
+
+on:
+  release:
+    types: [ published ]
+
+jobs:
+  build_and_publish:
+    name: 📦 Build and publish
+    runs-on: ubuntu-latest
+    env:
+      UV_PYTHON: "3.12.8"
+    environment:
+      name: pypi
+      url: https://pypi.org/p/pqcow
+    permissions:
+      id-token: write  # IMPORTANT: mandatory for trusted publishing
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: "latest"
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Set up Python ${{ env.UV_PYTHON }}
+        run: uv python install ${{ env.UV_PYTHON }}
+
+      - name: Install the project
+        run: uv sync --extra dev --extra lint
+
+      - name: Minimize uv cache
+        run: uv cache prune --ci
+
+      - name: Build dist
+        run: uv build
+
+      - name: Verify wheel installation
+        run: uv run --verbose --with ./dist/$(find ./dist/*.whl -printf "%f") --no-project --refresh-package pqcow -- python -c "import pqcow; print(pqcow.__version__)"
+
+      - name: 🐍 Publish distribution 📦
+        run: uv publish
