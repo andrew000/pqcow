@@ -71,8 +71,10 @@ class ServerDatabase[T: async_sessionmaker[AsyncSession]]:
 
         if initiator_id is not None and user:
             stmt = select(ChatModel).filter(
-                or_(ChatModel.user_id == initiator_id, ChatModel.chat_with_user_id == user.id),
-                or_(ChatModel.user_id == user.id, ChatModel.chat_with_user_id == initiator_id),
+                or_(
+                    and_(ChatModel.user_id == initiator_id, ChatModel.chat_with_user_id == user.id),
+                    and_(ChatModel.user_id == user.id, ChatModel.chat_with_user_id == initiator_id),
+                ),
             )
             chat = await session.scalar(stmt)
 

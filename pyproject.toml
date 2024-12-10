@@ -1,7 +1,7 @@
 [project]
 name = "pqcow"
 version = "0.0.1"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 dependencies = [
     "msgspec==0.18.6",
     "pqcow-liboqs==0.10.1.dev0",
@@ -22,7 +22,6 @@ dev = [
     "isort==5.13.2",
     "pre-commit==4.0.1",
     "ruff==0.8.2",
-    "bandit==1.8.0",
     "textual-dev==1.7.0",
 ]
 lint = [

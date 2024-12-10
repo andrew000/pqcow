@@ -1,0 +1,47 @@
+services:
+  server:
+    build:
+      dockerfile: Dockerfile
+
+    env_file: .env
+
+    user: server
+
+    volumes:
+      - ./dilithium.key:/app/dilithium.key
+      - ./pqcow-server.db:/app/pqcow-server.db
+
+    stop_signal: SIGINT
+
+    ports:
+      - "8080:8080"
+
+    restart: always
+
+    entrypoint: [ "python", "tests/__server__.py" ]
+
+
+#  caddy:
+#    image: caddy:2.8.4
+#    build:
+#        context: caddy
+#        dockerfile: Dockerfile
+#
+#    networks:
+#      - kuska_network
+#
+#    environment:
+#      - CF_API_TOKEN=$CF_API_TOKEN
+#
+#    ports:
+#      - "80:80"
+#      - "443:443"
+#
+#    volumes:
+#      - ./caddy/Caddyfile:/etc/caddy/Caddyfile
+#      - ./caddy/data:/data
+#      - ./caddy/config:/config
+#      - ./caddy/public:/usr/share/caddy/
+#      - ./caddy/certificates:/etc/caddy/certificates:ro
+#
+#    restart: always

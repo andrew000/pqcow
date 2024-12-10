@@ -53,6 +53,7 @@ async def sender(client: AsyncClient) -> CloseReason:
                         logger.info(
                             "/help - show this help message\n"
                             "/exit - exit client\n"
+                            "/me - show user info\n"
                             "/resolve - resolve user by dilithium public key\n"
                             "/send - send message to user\n"
                             "/list - list all chats\n"
@@ -139,6 +140,10 @@ async def chat_polling(client: AsyncClient) -> None:
 
         except asyncio.CancelledError:
             logger.info("Polling task was cancelled")
+            break
+
+        except Exception as e:
+            logger.exception("An error occurred while polling messages: %s", e.args)
             break
 
 
@@ -239,6 +244,8 @@ async def start_client(
     _sender_task = asyncio.create_task(sender(client))
     _polling_task = asyncio.create_task(chat_polling(client))
 
+    await client.resolve_user(client.public_key)
+
     try:
         async for answer, _event in client:
             if isinstance(answer, Error):
@@ -251,11 +258,14 @@ async def start_client(
 
             match answer.answer.data:
                 case ResolvedUser() as resolved_user:
-                    logger.info(
-                        "Resolved user: ID: %s; %s",
-                        resolved_user.id,
-                        resolved_user,
-                    )
+                    if resolved_user.dilithium_public_key == client.public_key:
+                        client.user_id = resolved_user.id
+                        logger.info(
+                            "Resolved user: ID: %s; %s",
+                            resolved_user.id,
+                            resolved_user.username,
+                        )
+                        continue
 
                     async with client.db.sessionmaker() as session:
                         await client.db.new_user(
@@ -265,8 +275,17 @@ async def start_client(
                             dilithium_public_key=resolved_user.dilithium_public_key,
                         )
 
+                    logger.info(
+                        "Resolved user: ID: %s; %s",
+                        resolved_user.id,
+                        resolved_user.username,
+                    )
+
                 case ChatListAnswer() as chat_list:
-                    logger.info("Chat list: %s", chat_list)
+                    logger.info(
+                        "Chat list: %s",
+                        [f"{chat.id=}: {chat.chat_with_user_id=}" for chat in chat_list.chats],
+                    )
 
                     async with client.db.sessionmaker() as session:
                         await client.db.batch_insert_chats(
@@ -332,7 +351,7 @@ if __name__ == "__main__":
             start_client(
                 "127.0.0.1",
                 8080,
-                user_identity_name="Andrew",
+                user_identity_name=input("Enter your identity name: ").strip(),
                 server_identity_name="master",
             ),
         )

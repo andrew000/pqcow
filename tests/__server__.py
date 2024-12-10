@@ -51,4 +51,4 @@ async def start_server(host: str, port: int) -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(start_server("127.0.0.1", 8080))
+    asyncio.run(start_server("0.0.0.0", 8080))

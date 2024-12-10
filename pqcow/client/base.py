@@ -9,26 +9,6 @@ if TYPE_CHECKING:
     from pqcow.pq_types.request_types import REQUEST_TYPES
 
 
-class BaseSyncClient(metaclass=ABCMeta):
-    @abstractmethod
-    def __init__(self, host: str, port: int, signature: Signature | None = None) -> None: ...
-
-    @abstractmethod
-    def connect(self) -> None: ...
-
-    @abstractmethod
-    def close(self) -> None: ...
-
-    @abstractmethod
-    def do_handshake(self) -> None: ...
-
-    @abstractmethod
-    def send_request(self, request: REQUEST_TYPES) -> None: ...
-
-    @abstractmethod
-    def send_message(self, chat_id: int | str, text: str) -> None: ...
-
-
 class BaseAsyncClient(metaclass=ABCMeta):
     @abstractmethod
     def __init__(
