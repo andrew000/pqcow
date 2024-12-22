@@ -37,7 +37,7 @@ format:
 	echo "Running isort..."
 	uv run isort --settings-file pyproject.toml $(src-dir) $(tests-dir)
 
-.PHONE mypy:
+.PHONY mypy:
 mypy:
 	echo "Running MyPy..."
 	uv run mypy --config-file pyproject.toml
